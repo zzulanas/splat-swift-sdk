@@ -12,7 +12,7 @@ import SplatKit
 //    - ARKitPose     — pose format sent to the API (handled internally by SplatScanner)
 
 /// Replace with your actual Splat API key before running on device.
-let apiKey = "s3d_REPLACE_ME"
+let apiKey = "s3d_8b580d374c3631e010b882143e17a61f"
 
 // MARK: - Mesh Material
 
@@ -412,7 +412,8 @@ final class ScanViewModel: ObservableObject {
                 videoURL: result.videoURL,
                 title: "Captured Scene",
                 preset: .standard,
-                arkitPoses: result.poses
+                arkitPoses: result.poses,
+                lidarPoints: result.lidarPoints
             ) { [weak self] status, pct in
                 Task { @MainActor in
                     self?.state = .processing(

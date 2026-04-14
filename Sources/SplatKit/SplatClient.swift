@@ -26,10 +26,12 @@ struct ProcessSceneData: Decodable {
 struct ProcessSceneBody: Encodable {
     let enableLod: Bool?
     let arkitPoses: [ARKitPose]?
+    let lidarPoints: [[Float]]?
 
     enum CodingKeys: String, CodingKey {
         case enableLod = "enable_lod"
         case arkitPoses = "arkit_poses"
+        case lidarPoints = "lidar_points"
     }
 }
 
@@ -174,11 +176,13 @@ public final class SplatClient: Sendable {
     public func processScene(
         id: String,
         arkitPoses: [ARKitPose]? = nil,
+        lidarPoints: [[Float]]? = nil,
         enableLOD: Bool = false
     ) async throws -> Scene {
         let body = ProcessSceneBody(
             enableLod: enableLOD ? true : nil,
-            arkitPoses: arkitPoses
+            arkitPoses: arkitPoses,
+            lidarPoints: lidarPoints
         )
 
         // The process endpoint returns { status, sceneId, message }
@@ -267,6 +271,7 @@ public final class SplatClient: Sendable {
         title: String? = nil,
         preset: SceneParams = .standard,
         arkitPoses: [ARKitPose]? = nil,
+        lidarPoints: [[Float]]? = nil,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
     ) async throws -> Scene {
         // 1. Create scene
@@ -278,7 +283,7 @@ public final class SplatClient: Sendable {
         onProgress?(.uploading, 100)
 
         // 3. Trigger processing
-        _ = try await processScene(id: sceneId, arkitPoses: arkitPoses, enableLOD: preset.enableLOD)
+        _ = try await processScene(id: sceneId, arkitPoses: arkitPoses, lidarPoints: lidarPoints, enableLOD: preset.enableLOD)
 
         // 4. Poll until complete or failed
         let scene = try await poller.poll(

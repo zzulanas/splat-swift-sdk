@@ -213,7 +213,8 @@ extension ARKitPose {
 
 /// Result from an ARKit capture session.
 ///
-/// Contains the recorded video, all sampled camera poses, and the capture duration.
+/// Contains the recorded video, all sampled camera poses, the capture duration,
+/// and an optional LiDAR point cloud from ARMeshAnchor (nil on non-LiDAR devices).
 public struct CaptureResult: Sendable {
 
     /// File URL of the recorded H.264 video in the temporary directory.
@@ -225,9 +226,14 @@ public struct CaptureResult: Sendable {
     /// Total capture duration in seconds.
     public let duration: TimeInterval
 
-    public init(videoURL: URL, poses: [ARKitPose], duration: TimeInterval) {
+    /// LiDAR point cloud sampled from ARMeshAnchor, or nil on non-LiDAR devices.
+    /// Each entry is [x, y, z] in ARKit world coordinates.
+    public let lidarPoints: [[Float]]?
+
+    public init(videoURL: URL, poses: [ARKitPose], duration: TimeInterval, lidarPoints: [[Float]]? = nil) {
         self.videoURL = videoURL
         self.poses = poses
         self.duration = duration
+        self.lidarPoints = lidarPoints
     }
 }

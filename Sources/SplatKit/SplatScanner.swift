@@ -263,10 +263,47 @@ public final class SplatScanner: NSObject {
             throw SplatError.serverError(0, "No output URL available.")
         }
 
+        // Extract LiDAR mesh points if available (iPhone 12 Pro+, iPad Pro)
+        var lidarPoints: [[Float]]? = nil
+        if let currentSession = session {
+            let meshAnchors = currentSession.currentFrame?.anchors.compactMap { $0 as? ARMeshAnchor } ?? []
+            if !meshAnchors.isEmpty {
+                var allPoints: [[Float]] = []
+                for anchor in meshAnchors {
+                    let geometry = anchor.geometry
+                    let transform = anchor.transform
+                    let vertexBuffer = geometry.vertices
+                    let vertexCount = vertexBuffer.count
+                    let bufferStride = vertexBuffer.stride
+                    let bufferOffset = vertexBuffer.offset
+
+                    for i in 0..<vertexCount {
+                        let ptr = vertexBuffer.buffer.contents()
+                            .advanced(by: bufferOffset + i * bufferStride)
+                            .assumingMemoryBound(to: (Float, Float, Float).self)
+                        let localPos = ptr.pointee
+                        // Transform local mesh vertex to ARKit world space
+                        let local = SIMD4<Float>(localPos.0, localPos.1, localPos.2, 1.0)
+                        let world = transform * local
+                        allPoints.append([world.x, world.y, world.z])
+                    }
+                }
+                // Subsample to max 20K points to keep payload reasonable
+                if allPoints.count > 20000 {
+                    let step = allPoints.count / 20000
+                    lidarPoints = stride(from: 0, to: allPoints.count, by: step).map { allPoints[$0] }
+                } else if !allPoints.isEmpty {
+                    lidarPoints = allPoints
+                }
+                print("SplatScanner: captured \(lidarPoints?.count ?? 0) LiDAR points from \(meshAnchors.count) anchors")
+            }
+        }
+
         let result = CaptureResult(
             videoURL: url,
             poses: capturedPoses,
-            duration: duration
+            duration: duration,
+            lidarPoints: lidarPoints
         )
 
         // Clean up references
