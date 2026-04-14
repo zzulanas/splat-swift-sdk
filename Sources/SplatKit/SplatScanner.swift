@@ -99,7 +99,9 @@ public final class SplatScanner: NSObject {
     /// Sendable relay for bridging the nonisolated ARSessionDelegate callback
     /// to the main-actor-isolated frame processing. Accessed from the nonisolated
     /// delegate method, but only written on the main actor (start/stop).
-    private var frameRelay: FrameRelay?
+    /// Marked nonisolated(unsafe) because the relay itself is Sendable and
+    /// is only mutated on the main actor (start/stop).
+    nonisolated(unsafe) private var frameRelay: FrameRelay?
     private var processingTask: Task<Void, Never>?
 
     // MARK: - Start

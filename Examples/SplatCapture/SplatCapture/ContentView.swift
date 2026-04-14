@@ -62,7 +62,6 @@ struct ContentView: View {
                 Image(systemName: "record.circle")
                     .font(.system(size: 64))
                     .foregroundStyle(.red)
-                    .symbolEffect(.pulse)
                 Text("Scanning...")
                     .font(.headline)
                 Text("\(viewModel.frameCount) poses captured")
