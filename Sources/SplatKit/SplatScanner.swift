@@ -1,6 +1,6 @@
 import Foundation
 
-#if canImport(ARKit) && canImport(AVFoundation)
+#if os(iOS)
 @preconcurrency import ARKit
 import AVFoundation
 
@@ -353,4 +353,4 @@ extension SplatScanner: ARSessionDelegate {
     }
 }
 
-#endif // canImport(ARKit) && canImport(AVFoundation)
+#endif // os(iOS)

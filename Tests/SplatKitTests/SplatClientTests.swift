@@ -22,7 +22,22 @@ final class MockURLProtocol: URLProtocol {
     }
 
     override func startLoading() {
-        Self.capturedRequests.append(request)
+        // Preserve httpBody from the stream if the body was consumed by URLSession
+        var capturedRequest = request
+        if capturedRequest.httpBody == nil, let stream = capturedRequest.httpBodyStream {
+            stream.open()
+            var data = Data()
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
+            defer { buffer.deallocate() }
+            while stream.hasBytesAvailable {
+                let count = stream.read(buffer, maxLength: 4096)
+                if count > 0 { data.append(buffer, count: count) }
+                else { break }
+            }
+            stream.close()
+            capturedRequest.httpBody = data
+        }
+        Self.capturedRequests.append(capturedRequest)
 
         let path = request.url?.path ?? ""
 

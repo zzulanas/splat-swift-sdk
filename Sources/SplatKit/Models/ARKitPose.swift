@@ -8,7 +8,7 @@ import simd
 import CoreGraphics
 #endif
 
-#if canImport(ARKit)
+#if os(iOS)
 import ARKit
 #endif
 
@@ -76,7 +76,7 @@ public struct ARKitPose: Codable, Sendable, Equatable {
 
     // MARK: - Convenience init from ARKit types
 
-    #if canImport(ARKit)
+    #if os(iOS)
     /// Create a pose from native ARKit types.
     /// - Parameters:
     ///   - frame: The ARFrame to capture pose from.
