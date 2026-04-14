@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>SplatCapture needs camera access to scan 3D scenes with ARKit.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>SplatCapture needs motion data to track camera poses for 3D reconstruction.</string>
+</dict>
+</plist>
