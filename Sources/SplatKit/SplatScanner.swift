@@ -75,6 +75,9 @@ public final class SplatScanner: NSObject {
     /// `ARView` for camera preview while scanning.
     public private(set) var session: ARSession?
 
+    /// Total number of video frames written (all frames, ~30fps).
+    public private(set) var totalFrameCount: Int = 0
+
     /// Called on the main actor each time a new pose is captured.
     ///
     /// The parameter is the total number of poses captured so far.
@@ -118,6 +121,7 @@ public final class SplatScanner: NSObject {
         // Reset state
         capturedPoses = []
         frameCount = 0
+        totalFrameCount = 0
         poseIndex = 0
 
         // Create output file URL in temp directory
@@ -278,6 +282,7 @@ public final class SplatScanner: NSObject {
 
     private func processFrame(_ frame: ARFrame, width: Int, height: Int) {
         frameCount += 1
+        totalFrameCount = frameCount
 
         // Write every frame to the video
         let presentationTime = CMTime(
