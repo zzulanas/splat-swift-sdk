@@ -71,14 +71,16 @@ public final class SplatScanner: NSObject {
     /// Whether the scanner is currently recording video and poses.
     public private(set) var isRecording: Bool = false
 
+    /// The underlying ARKit session. Use this to connect an `ARSCNView` or
+    /// `ARView` for camera preview while scanning.
+    public private(set) var session: ARSession?
+
     /// Called on the main actor each time a new pose is captured.
     ///
     /// The parameter is the total number of poses captured so far.
     public var onFrameCountUpdated: ((Int) -> Void)?
 
     // MARK: - Private Properties
-
-    private var arSession: ARSession?
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -132,7 +134,7 @@ public final class SplatScanner: NSObject {
         // Configure ARKit session
         let session = ARSession()
         session.delegate = self
-        self.arSession = session
+        self.session = session
 
         let configuration = ARWorldTrackingConfiguration()
         configuration.videoFormat = Self.preferredVideoFormat(for: configuration)
@@ -239,7 +241,7 @@ public final class SplatScanner: NSObject {
         await processingTask?.value
 
         // Pause the AR session
-        arSession?.pause()
+        session?.pause()
 
         // Finalize the video
         videoInput?.markAsFinished()
@@ -264,7 +266,7 @@ public final class SplatScanner: NSObject {
         )
 
         // Clean up references
-        arSession = nil
+        session = nil
         assetWriter = nil
         videoInput = nil
         pixelBufferAdaptor = nil

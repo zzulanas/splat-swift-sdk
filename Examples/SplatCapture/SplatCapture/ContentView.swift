@@ -1,10 +1,33 @@
 import SwiftUI
+import ARKit
 import SplatKit
 
 // MARK: - Configuration
 
 /// Replace with your actual Splat API key before running on device.
 let apiKey = "s3d_REPLACE_ME"
+
+// MARK: - ARCameraView
+
+/// Wraps an ARSCNView to display the live camera feed from an ARSession.
+struct ARCameraView: UIViewRepresentable {
+
+    let session: ARSession
+
+    func makeUIView(context: Context) -> ARSCNView {
+        let view = ARSCNView()
+        view.session = session
+        view.automaticallyUpdatesLighting = true
+        view.rendersContinuously = true
+        return view
+    }
+
+    func updateUIView(_ uiView: ARSCNView, context: Context) {
+        if uiView.session !== session {
+            uiView.session = session
+        }
+    }
+}
 
 // MARK: - ContentView
 
@@ -13,30 +36,55 @@ struct ContentView: View {
     @StateObject private var viewModel = ScanViewModel()
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
+        ZStack {
+            // Camera preview fills the screen during scanning
+            if case .scanning = viewModel.state,
+               let session = viewModel.arSession {
+                ARCameraView(session: session)
+                    .ignoresSafeArea()
 
-                statusSection
+                // Overlay: pose counter + stop button
+                VStack {
+                    // Top: pose counter pill
+                    HStack {
+                        Spacer()
+                        Label("\(viewModel.frameCount) poses", systemImage: "record.circle")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.red.opacity(0.85), in: Capsule())
+                    }
+                    .padding()
 
-                Spacer()
+                    Spacer()
 
-                actionButton
-
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
+                    // Bottom: stop button
+                    Button("Stop & Upload") {
+                        Task { await viewModel.stopAndUpload() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.red)
+                    .padding(.bottom, 40)
                 }
-            }
-            .padding()
-            .navigationTitle("Splat Capture")
-            .alert("Error", isPresented: $viewModel.showError) {
-                Button("OK") {}
-            } message: {
-                Text(viewModel.errorMessage ?? "An unknown error occurred.")
+            } else {
+                // Non-scanning states: standard UI
+                NavigationStack {
+                    VStack(spacing: 24) {
+                        Spacer()
+                        statusSection
+                        Spacer()
+                        actionButton
+                    }
+                    .padding()
+                    .navigationTitle("Splat Capture")
+                    .alert("Error", isPresented: $viewModel.showError) {
+                        Button("OK") {}
+                    } message: {
+                        Text(viewModel.errorMessage ?? "An unknown error occurred.")
+                    }
+                }
             }
         }
     }
@@ -58,16 +106,7 @@ struct ContentView: View {
             }
 
         case .scanning:
-            VStack(spacing: 8) {
-                Image(systemName: "record.circle")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.red)
-                Text("Scanning...")
-                    .font(.headline)
-                Text("\(viewModel.frameCount) poses captured")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            EmptyView() // Handled by the camera overlay
 
         case .uploading:
             VStack(spacing: 8) {
@@ -122,12 +161,7 @@ struct ContentView: View {
             .controlSize(.large)
 
         case .scanning:
-            Button("Stop & Upload") {
-                Task { await viewModel.stopAndUpload() }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .tint(.red)
+            EmptyView() // Handled by the camera overlay
 
         case .uploading, .processing:
             EmptyView()
@@ -161,6 +195,9 @@ final class ScanViewModel: ObservableObject {
     @Published var frameCount: Int = 0
     @Published var errorMessage: String?
     @Published var showError: Bool = false
+
+    /// Exposed so the view can attach an ARSCNView to the session.
+    var arSession: ARSession? { scanner.session }
 
     private let client = SplatClient(apiKey: apiKey)
     private let scanner = SplatScanner()
