@@ -32,7 +32,7 @@ public enum SceneStatus: String, Codable, Sendable, CaseIterable {
     /// Processing completed successfully.
     case complete
 
-    /// Processing failed. Check ``Scene/processingError`` for details.
+    /// Processing failed. Check ``Scene/processingStage`` for details.
     case failed
 
     /// Processing was cancelled by the user.

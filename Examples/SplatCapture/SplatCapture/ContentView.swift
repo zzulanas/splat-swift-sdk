@@ -3,7 +3,13 @@ import ARKit
 import SceneKit
 import SplatKit
 
-// MARK: - Configuration
+// MARK: - SplatKit Integration: Configuration
+//
+// 1. Set your API key here. Get one at https://splat-3d.com/dashboard
+// 2. The SDK entry points used in this app:
+//    - SplatScanner  — captures video + ARKit poses (see startScan/stopAndUpload)
+//    - SplatClient   — uploads and processes via the Splat API (see stopAndUpload)
+//    - ARKitPose     — pose format sent to the API (handled internally by SplatScanner)
 
 /// Replace with your actual Splat API key before running on device.
 let apiKey = "s3d_REPLACE_ME"
@@ -334,6 +340,7 @@ final class ScanViewModel: ObservableObject {
     /// Exposed so the view can attach an ARSCNView to the session.
     var arSession: ARSession? { scanner.session }
 
+    // MARK: - SplatKit Integration: Client & Scanner Setup
     private let client = SplatClient(apiKey: apiKey)
     private let scanner = SplatScanner()
     private let haptics = UIImpactFeedbackGenerator(style: .medium)
@@ -342,6 +349,13 @@ final class ScanViewModel: ObservableObject {
     private var lastPoseCount: Int = 0
 
     func startScan() async {
+        // Check for LiDAR support
+        guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) else {
+            errorMessage = "This device doesn't have a LiDAR scanner. SplatCapture requires iPhone 12 Pro or newer (or iPad Pro with LiDAR)."
+            showError = true
+            return
+        }
+
         do {
             haptics.prepare()
             lastPoseCount = 0
@@ -357,6 +371,9 @@ final class ScanViewModel: ObservableObject {
                 }
             }
 
+            // MARK: - SplatKit Integration: Start Capture
+            // scanner.start() begins the ARKit session and video recording.
+            // Access scanner.session to connect your own ARSCNView for preview.
             try await scanner.start()
             state = .scanning
             scanStartDate = Date()
@@ -384,6 +401,10 @@ final class ScanViewModel: ObservableObject {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
 
         do {
+            // MARK: - SplatKit Integration: Stop & Upload
+            // scanner.stop() finalizes the video and returns poses + video URL.
+            // client.createAndProcess() handles the full flow: create scene,
+            // upload video, trigger processing, and poll until complete.
             let result = try await scanner.stop()
             state = .uploading
 

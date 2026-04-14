@@ -10,6 +10,7 @@
 		A1000001229F0001 /* SplatCaptureApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002229F0001 /* SplatCaptureApp.swift */; };
 		A1000003229F0001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004229F0001 /* ContentView.swift */; };
 		A1000010229F0001 /* SplatKit in Frameworks */ = {isa = PBXBuildFile; productRef = A100000F229F0001 /* SplatKit */; };
+		A1000017229F0001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000018229F0001 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -17,6 +18,7 @@
 		A1000004229F0001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A1000005229F0001 /* SplatCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SplatCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1000006229F0001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000018229F0001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -44,6 +46,7 @@
 			children = (
 				A1000002229F0001 /* SplatCaptureApp.swift */,
 				A1000004229F0001 /* ContentView.swift */,
+				A1000018229F0001 /* Assets.xcassets */,
 				A1000006229F0001 /* Info.plist */,
 			);
 			path = SplatCapture;
@@ -66,6 +69,7 @@
 			buildPhases = (
 				A100000D229F0001 /* Sources */,
 				A1000007229F0001 /* Frameworks */,
+				A1000019229F0001 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -109,6 +113,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1000019229F0001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000017229F0001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A100000D229F0001 /* Sources */ = {
