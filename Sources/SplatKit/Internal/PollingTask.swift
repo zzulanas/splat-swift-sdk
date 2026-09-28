@@ -64,7 +64,7 @@ final class PollingTask: Sendable {
                 return scene
             case .failed:
                 throw SplatError.processingFailed(
-                    scene.processingStage ?? "Processing failed."
+                    scene.processingError ?? scene.processingStage ?? "Processing failed."
                 )
             case .cancelled:
                 throw SplatError.cancelled

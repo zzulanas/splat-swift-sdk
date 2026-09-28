@@ -10,15 +10,15 @@ import Foundation
 /// uploading -> extracting_frames -> running_sfm -> training -> exporting -> compressing -> complete
 ///                                                                                       -> failed
 /// ```
-public enum SceneStatus: String, Codable, Sendable, CaseIterable {
+public enum SceneStatus: Codable, Sendable, CaseIterable {
     /// Video is being uploaded to storage.
     case uploading
 
     /// Frames are being extracted from the uploaded video.
-    case extractingFrames = "extracting_frames"
+    case extractingFrames
 
     /// Structure from Motion is running (GLOMAP or ARKit poses).
-    case runningSfm = "running_sfm"
+    case runningSfm
 
     /// Gaussian splat model is being trained.
     case training
@@ -32,7 +32,7 @@ public enum SceneStatus: String, Codable, Sendable, CaseIterable {
     /// Processing completed successfully.
     case complete
 
-    /// Processing failed. Check ``Scene/processingStage`` for details.
+    /// Processing failed. Check ``Scene/processingError`` for details.
     case failed
 
     /// Processing was cancelled by the user.
@@ -40,6 +40,92 @@ public enum SceneStatus: String, Codable, Sendable, CaseIterable {
 
     /// Alias for backwards compatibility with API responses that use "processing".
     case processing
+
+    /// An unknown status value received from the server.
+    case unknown(String)
+
+    // CaseIterable requires all cases — unknown is not enumerable, so provide known cases only
+    public static var allCases: [SceneStatus] {
+        [.uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .complete, .failed, .cancelled, .processing]
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        switch raw {
+        case "uploading": self = .uploading
+        case "extracting_frames": self = .extractingFrames
+        case "running_sfm": self = .runningSfm
+        case "training": self = .training
+        case "exporting": self = .exporting
+        case "compressing": self = .compressing
+        case "complete": self = .complete
+        case "failed": self = .failed
+        case "cancelled": self = .cancelled
+        case "processing": self = .processing
+        default: self = .unknown(raw)
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .uploading: try container.encode("uploading")
+        case .extractingFrames: try container.encode("extracting_frames")
+        case .runningSfm: try container.encode("running_sfm")
+        case .training: try container.encode("training")
+        case .exporting: try container.encode("exporting")
+        case .compressing: try container.encode("compressing")
+        case .complete: try container.encode("complete")
+        case .failed: try container.encode("failed")
+        case .cancelled: try container.encode("cancelled")
+        case .processing: try container.encode("processing")
+        case .unknown(let raw): try container.encode(raw)
+        }
+    }
+}
+
+// MARK: - SceneStatus Equatable
+
+extension SceneStatus: Equatable {
+    public static func == (lhs: SceneStatus, rhs: SceneStatus) -> Bool {
+        switch (lhs, rhs) {
+        case (.uploading, .uploading): return true
+        case (.extractingFrames, .extractingFrames): return true
+        case (.runningSfm, .runningSfm): return true
+        case (.training, .training): return true
+        case (.exporting, .exporting): return true
+        case (.compressing, .compressing): return true
+        case (.complete, .complete): return true
+        case (.failed, .failed): return true
+        case (.cancelled, .cancelled): return true
+        case (.processing, .processing): return true
+        case (.unknown(let a), .unknown(let b)): return a == b
+        default: return false
+        }
+    }
+}
+
+// MARK: - SceneStatus RawValue
+
+extension SceneStatus {
+    /// The raw string value of this status, matching the API wire format.
+    /// For `.unknown(raw)` cases, returns the raw string as received from the server.
+    public var rawValue: String {
+        switch self {
+        case .uploading: return "uploading"
+        case .extractingFrames: return "extracting_frames"
+        case .runningSfm: return "running_sfm"
+        case .training: return "training"
+        case .exporting: return "exporting"
+        case .compressing: return "compressing"
+        case .complete: return "complete"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        case .processing: return "processing"
+        case .unknown(let raw): return raw
+        }
+    }
 }
 
 // MARK: - Scene
@@ -84,11 +170,19 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     /// URL of the scene thumbnail image, or `nil` if not yet generated.
     public let thumbnailURL: URL?
 
+    /// Error message when processing failed, or `nil` if no error.
+    public let processingError: String?
+
     /// Viewer URL for the scene on splat-3d.com.
-    public var viewerURL: URL? {
-        guard status == .complete else { return nil }
-        return URL(string: "https://splat-3d.com/s/\(id)")
-    }
+    /// Decoded from the server response; falls back to a locally-constructed URL for
+    /// backwards compatibility with older API responses.
+    public let viewerURL: URL?
+
+    /// Download URL for the raw PLY file, or `nil` if not available.
+    public let downloadURL: URL?
+
+    /// Output format of the processed scene (e.g. "sog", "ply").
+    public let format: String?
 
     /// When the scene was created.
     public let createdAt: Date
@@ -107,7 +201,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         switch status {
         case .uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .processing:
             return true
-        case .complete, .failed, .cancelled:
+        case .complete, .failed, .cancelled, .unknown:
             return false
         }
     }
@@ -124,6 +218,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         case processingPct = "processing_pct"
         case numGaussians = "num_gaussians"
         case thumbnailR2Key = "thumbnail_r2_key"
+        case processingError = "processing_error"
+        case viewerURLKey = "viewer_url"
+        case downloadURL = "download_url"
+        case format
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -142,6 +240,9 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         processingPct = try container.decodeIfPresent(Double.self, forKey: .processingPct)
         numGaussians = try container.decodeIfPresent(Int.self, forKey: .numGaussians)
         thumbnailR2Key = try container.decodeIfPresent(String.self, forKey: .thumbnailR2Key)
+        processingError = try container.decodeIfPresent(String.self, forKey: .processingError)
+        downloadURL = try container.decodeIfPresent(URL.self, forKey: .downloadURL)
+        format = try container.decodeIfPresent(String.self, forKey: .format)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
 
@@ -151,6 +252,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         } else {
             thumbnailURL = nil
         }
+
+        // Prefer server-provided viewer URL; fall back to local construction for backwards compat
+        let serverViewerURL = try container.decodeIfPresent(URL.self, forKey: .viewerURLKey)
+        viewerURL = serverViewerURL ?? (status == .complete ? URL(string: "https://splat-3d.com/s/\(id)") : nil)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -164,6 +269,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         try container.encodeIfPresent(processingPct, forKey: .processingPct)
         try container.encodeIfPresent(numGaussians, forKey: .numGaussians)
         try container.encodeIfPresent(thumbnailR2Key, forKey: .thumbnailR2Key)
+        try container.encodeIfPresent(processingError, forKey: .processingError)
+        try container.encodeIfPresent(viewerURL, forKey: .viewerURLKey)
+        try container.encodeIfPresent(downloadURL, forKey: .downloadURL)
+        try container.encodeIfPresent(format, forKey: .format)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode(updatedAt, forKey: .updatedAt)
     }
@@ -179,6 +288,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         processingPct: Double? = nil,
         numGaussians: Int? = nil,
         thumbnailURL: URL? = nil,
+        processingError: String? = nil,
+        viewerURL: URL? = nil,
+        downloadURL: URL? = nil,
+        format: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -192,6 +305,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         self.numGaussians = numGaussians
         self.thumbnailURL = thumbnailURL
         self.thumbnailR2Key = thumbnailURL != nil ? "scenes/\(id)/thumbnail.jpg" : nil
+        self.processingError = processingError
+        self.viewerURL = viewerURL ?? (status == .complete ? URL(string: "https://splat-3d.com/s/\(id)") : nil)
+        self.downloadURL = downloadURL
+        self.format = format
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -206,6 +323,10 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
             && lhs.processingStage == rhs.processingStage
             && lhs.processingPct == rhs.processingPct
             && lhs.numGaussians == rhs.numGaussians
+            && lhs.processingError == rhs.processingError
+            && lhs.viewerURL == rhs.viewerURL
+            && lhs.downloadURL == rhs.downloadURL
+            && lhs.format == rhs.format
             && lhs.createdAt == rhs.createdAt
             && lhs.updatedAt == rhs.updatedAt
     }
