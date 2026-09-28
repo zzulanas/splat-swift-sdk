@@ -79,11 +79,30 @@ let scene = try await client.createAndProcess(
 |--------|-------------|
 | `createScene(title:preset:)` | Create a scene and get a presigned upload URL |
 | `uploadVideo(from:to:)` | Upload a video file to the presigned URL |
-| `processScene(id:arkitPoses:enableLOD:)` | Trigger GPU processing |
+| `processScene(id:arkitPoses:lidarPoints:enableLOD:)` | Trigger GPU processing |
 | `getScene(id:)` | Get scene status and metadata |
-| `listScenes()` | List all scenes |
+| `listScenePage(cursor:limit:)` | One page of scenes, newest first, with the next page's cursor |
+| `allScenes(pageSize:)` | Every scene, fetched a page at a time as you iterate |
+| `updateScene(id:_:)` | Change title, address, description, or visibility |
+| `retrainScene(id:preset:)` | Process the source again at another preset, as a new scene |
+| `cancelScene(id:)` | Cancel an uploading or processing scene |
+| `downloadScene(id:format:)` | Download the 3D model (SOG or PLY) to a temporary file |
+| `getSceneThumbnail(id:)` | Thumbnail image data |
+| `getUsage()` | Usage this billing period and plan limits |
 | `deleteScene(id:)` | Delete a scene and all files |
-| `createAndProcess(videoURL:title:preset:arkitPoses:onProgress:)` | Full flow in one call |
+| `createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)` | Full flow in one call |
+
+`listScenes()` is deprecated: it returns only the first page.
+
+### Pagination
+
+```swift
+for try await scene in client.allScenes() {
+    print(scene.id, scene.status.rawValue)
+}
+```
+
+For page-level control, pass each page's `nextCursor` back until it is `nil`. Treat the cursor as opaque.
 
 ### ScenePreset
 
@@ -96,23 +115,27 @@ let scene = try await client.createAndProcess(
 
 ### Error Handling
 
-All methods throw `SplatError`:
+API failures throw `SplatError`; network failures throw `URLError`. Every HTTP error carries a `SplatError.APIError` with the status, the API's error `code` (such as `conflict` or `insufficient_credits`), the `message`, and the `requestID` to quote to support:
 
 ```swift
 do {
     let scene = try await client.getScene(id: "abc123")
 } catch SplatError.unauthorized {
     // Invalid API key
-} catch SplatError.notFound(let message) {
-    // Scene doesn't exist
-} catch SplatError.rateLimited {
-    // Back off and retry
+} catch SplatError.notFound(let error) {
+    // Scene doesn't exist: error.message
+} catch SplatError.rateLimited(let error) {
+    // Back off; error.retryAfter is the server's requested delay, if sent
+} catch SplatError.serverError(let error) {
+    // Any other status: branch on error.code, log error.requestID
 } catch SplatError.timeout {
     // Processing took too long
 } catch SplatError.processingFailed(let reason) {
     // Pipeline error
 }
 ```
+
+See [CHANGELOG.md](CHANGELOG.md) for changes since 0.1.0.
 
 ## Authentication
 
