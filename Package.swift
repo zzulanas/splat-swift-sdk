@@ -22,7 +22,8 @@ let package = Package(
         .testTarget(
             name: "SplatKitTests",
             dependencies: ["SplatKit"],
-            path: "Tests/SplatKitTests"
+            path: "Tests/SplatKitTests",
+            resources: [.copy("Fixtures")]
         ),
     ]
 )

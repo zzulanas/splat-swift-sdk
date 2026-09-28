@@ -51,8 +51,8 @@ final class PollingTask: Sendable {
 
             let scene: Scene = try await client.request(
                 Scene.self,
-                path: "/v1/scenes/\(sceneId)",
-                method: "GET"
+                path: APIPath.scene(sceneId),
+                method: .get
             )
 
             // Report progress
