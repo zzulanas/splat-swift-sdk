@@ -156,9 +156,11 @@ do {
     // Invalid API key
 } catch SplatError.notFound(let error) {
     // Scene doesn't exist: error.message
+} catch SplatError.rateLimited(let error) where error.code == "quota_exceeded" {
+    // Monthly plan limit used up: error.message says how to raise it
 } catch SplatError.rateLimited(let error) {
     // Back off; error.retryAfter is the server's requested delay, if sent
-} catch SplatError.serverError(let error) {
+} catch SplatError.requestFailed(let error) {
     // Any other status: branch on error.code, log error.requestID
 } catch SplatError.timeout {
     // Stopped waiting for processing; the job may still finish

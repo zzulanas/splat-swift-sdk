@@ -334,8 +334,10 @@ final class SplatClientTests: XCTestCase {
                 height: 1440
             ),
         ]
+        // The route needs at least 5 poses; pad with later frames.
+        let padded = poses + (1..<5).map(makePose)
 
-        let scene = try await client.processScene(id: "abc123", arkitPoses: poses)
+        let scene = try await client.processScene(id: "abc123", arkitPoses: padded)
 
         XCTAssertEqual(scene.id, "abc123")
         XCTAssertEqual(scene.status, .processing)
@@ -352,7 +354,7 @@ final class SplatClientTests: XCTestCase {
 
             // Should have arkit_poses array
             let arkitPoses = json?["arkit_poses"] as? [[String: Any]]
-            XCTAssertEqual(arkitPoses?.count, 1)
+            XCTAssertEqual(arkitPoses?.count, 5)
             XCTAssertEqual(arkitPoses?.first?["timestamp"] as? Double, 1.234)
             XCTAssertEqual(arkitPoses?.first?["file_path"] as? String, "frame_000000.jpg")
             XCTAssertEqual(arkitPoses?.first?["width"] as? Int, 1920)
@@ -596,13 +598,13 @@ final class SplatClientTests: XCTestCase {
 
         do {
             _ = try await client.listScenePage()
-            XCTFail("Should have thrown serverError")
+            XCTFail("Should have thrown requestFailed")
         } catch let error as SplatError {
-            if case .serverError(let apiError) = error {
+            if case .requestFailed(let apiError) = error {
                 XCTAssertEqual(apiError.statusCode, 500)
                 XCTAssertEqual(apiError.message, "Something went wrong.")
             } else {
-                XCTFail("Expected .serverError, got \(error)")
+                XCTFail("Expected .requestFailed, got \(error)")
             }
         }
     }

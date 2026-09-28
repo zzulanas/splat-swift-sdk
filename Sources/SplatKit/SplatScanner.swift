@@ -161,7 +161,7 @@ public final class SplatScanner: NSObject {
         }
 
         guard let frame = firstFrame else {
-            throw SplatError.serverError(.capture("Failed to receive first ARKit frame."))
+            throw SplatError.captureFailed("Failed to receive first ARKit frame.")
         }
 
         // Set up AVAssetWriter with the frame dimensions
@@ -233,7 +233,7 @@ public final class SplatScanner: NSObject {
     /// - Throws: An error if the video could not be finalized.
     public func stop() async throws -> CaptureResult {
         guard isRecording else {
-            throw SplatError.serverError(.capture("Scanner is not recording."))
+            throw SplatError.captureFailed("Scanner is not recording.")
         }
 
         isRecording = false
@@ -253,14 +253,14 @@ public final class SplatScanner: NSObject {
             await writer.finishWriting()
 
             if writer.status == .failed, let error = writer.error {
-                throw SplatError.uploadFailed(error)
+                throw SplatError.captureFailed(error.localizedDescription)
             }
         }
 
         let duration = capturedPoses.last.map { $0.timestamp - startTime } ?? 0
 
         guard let url = outputURL else {
-            throw SplatError.serverError(.capture("No output URL available."))
+            throw SplatError.captureFailed("No output URL available.")
         }
 
         // Extract LiDAR mesh points if available (iPhone 12 Pro+, iPad Pro)
@@ -396,17 +396,6 @@ extension SplatScanner: ARSessionDelegate {
         // 3. The relay itself is Sendable (thread-safe continuation)
         // For Swift 6, use nonisolated(unsafe) or extract into a separate delegate object.
         frameRelay?.yield(frame)
-    }
-}
-
-// MARK: - Capture Errors
-
-extension SplatError.APIError {
-
-    /// A local capture failure. Status 0 means no HTTP response was
-    /// involved, as these errors have been reported since 0.1.0.
-    static func capture(_ message: String) -> SplatError.APIError {
-        SplatError.APIError(statusCode: 0, message: message)
     }
 }
 

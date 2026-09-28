@@ -90,6 +90,40 @@ struct ProcessSceneBody: Encodable {
         case arkitPoses = "arkit_poses"
         case lidarPoints = "lidar_points"
     }
+
+    /// Pose count the route accepts, and its LiDAR point cap
+    /// (processSceneBodySchema in the API's api/src/routes/schemas.ts).
+    /// Outside them the whole launch is a 400, after the upload.
+    static let poseRange = 5...1000
+    static let maxLidarPoints = 50_000
+
+    /// Fit captured data to the route's limits. Fewer than 5 poses are left
+    /// out: the pipeline would solve camera poses itself anyway
+    /// (arkit_hydrate.py). Longer captures are thinned evenly.
+    init(enableLOD: Bool, arkitPoses: [ARKitPose]?, lidarPoints: [[Float]]?) {
+        enableLod = enableLOD ? true : nil
+
+        if let arkitPoses, arkitPoses.count >= Self.poseRange.lowerBound {
+            self.arkitPoses = Self.evenlySpaced(arkitPoses, limit: Self.poseRange.upperBound)
+        } else {
+            self.arkitPoses = nil
+        }
+
+        self.lidarPoints = lidarPoints.map { Self.evenlySpaced($0, limit: Self.maxLidarPoints) }
+    }
+
+    /// At most `limit` items spread evenly across `items`, in order: index
+    /// `Int(i × count / limit)`, as the pipeline thins poses itself. The
+    /// result is deterministic, so a repeated launch sends the same body.
+    ///
+    /// 1,500 poses into 1,000 keep indices 0, 1, 3, 4, 6, … 1,498.
+    static func evenlySpaced<T>(_ items: [T], limit: Int) -> [T] {
+        guard items.count > limit else {
+            return items
+        }
+        let step = Double(items.count) / Double(limit)
+        return (0..<limit).map { items[Int(Double($0) * step)] }
+    }
 }
 
 // MARK: - SplatClient
@@ -210,7 +244,7 @@ public final class SplatClient: Sendable {
     public func createScene(
         title: String? = nil,
         preset: SceneParams = .standard
-    ) async throws -> (sceneId: String, uploadURL: URL) {
+    ) async throws -> (sceneID: String, uploadURL: URL) {
         struct Body: Encodable {
             let title: String?
             let preset: String
@@ -238,7 +272,7 @@ public final class SplatClient: Sendable {
             body: body
         )
 
-        return (sceneId: result.sceneId, uploadURL: result.uploadUrl)
+        return (sceneID: result.sceneId, uploadURL: result.uploadUrl)
     }
 
     // MARK: - Upload Video
@@ -274,6 +308,10 @@ public final class SplatClient: Sendable {
     /// has a launch fail with `conflict` (409), which is never retried; the
     /// scene is already processing, so resume with ``waitForScene(id:onProgress:)``.
     ///
+    /// The route accepts 5–1,000 poses and up to 50,000 LiDAR points. Longer
+    /// captures are thinned evenly to fit; fewer than 5 poses are not sent,
+    /// and the pipeline solves camera poses itself.
+    ///
     /// - Parameters:
     ///   - id: The scene ID to process.
     ///   - arkitPoses: Optional array of ARKit camera poses. When provided,
@@ -292,11 +330,7 @@ public final class SplatClient: Sendable {
         enableLOD: Bool = false,
         idempotencyKey: String? = nil
     ) async throws -> Scene {
-        let body = ProcessSceneBody(
-            enableLod: enableLOD ? true : nil,
-            arkitPoses: arkitPoses,
-            lidarPoints: lidarPoints
-        )
+        let body = ProcessSceneBody(enableLOD: enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
 
         // The process endpoint returns { status, sceneId, message }
         // but we want to return a full Scene, so we fetch it after triggering
@@ -400,7 +434,7 @@ public final class SplatClient: Sendable {
     ///   ``Scene/downloadURL`` and ``Scene/format`` are `nil`; use
     ///   ``getScene(id:)`` for those.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    ///   ``SplatError/serverError(_:)`` with code `invalid_input` if `update`
+    ///   ``SplatError/requestFailed(_:)`` with code `invalid_input` if `update`
     ///   sets no fields.
     public func updateScene(id: String, _ update: SceneUpdate) async throws -> Scene {
         try await api.request(
@@ -426,7 +460,7 @@ public final class SplatClient: Sendable {
     ///   - preset: Quality preset for the new scene.
     /// - Returns: The new scene's ID. Poll it with ``getScene(id:)``.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    ///   ``SplatError/serverError(_:)`` with code `conflict` while the scene
+    ///   ``SplatError/requestFailed(_:)`` with code `conflict` while the scene
     ///   is still uploading.
     public func retrainScene(id: String, preset: ScenePreset) async throws -> String {
         let result = try await api.request(
@@ -444,7 +478,7 @@ public final class SplatClient: Sendable {
     ///
     /// - Parameter id: The scene ID.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    ///   ``SplatError/serverError(_:)`` with code `conflict` if the scene has
+    ///   ``SplatError/requestFailed(_:)`` with code `conflict` if the scene has
     ///   already finished.
     public func cancelScene(id: String) async throws {
         try await api.requestVoid(path: APIPath.scene(id, .cancel), method: .post)

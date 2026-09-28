@@ -71,7 +71,7 @@ extension SplatClientTests {
 
         let scene = try await makeClient().getScene(id: "future")
 
-        XCTAssertEqual(scene.status, .unknown("some_future_state"))
+        XCTAssertEqual(scene.status, SceneStatus(rawValue: "some_future_state"))
         XCTAssertEqual(scene.status.rawValue, "some_future_state")
     }
 
@@ -84,5 +84,72 @@ extension SplatClientTests {
 
         XCTAssertTrue(scene.isFailed)
         XCTAssertEqual(scene.processingError, "Not enough overlap between photos")
+    }
+}
+
+// MARK: - Server statuses
+//
+// Every value the API can put in `status`: the database's tour_stage enum
+// (supabase/migrations: create_tours, add_cancelled_stage, add_preview_fields,
+// tour_stage_enum_additions in the gaussian-splatting repo), plus
+// "processing", which getSceneStatus reports from its live Modal probe
+// (api/src/lib/scenes.ts). listScenes and a failed probe return the raw
+// database value, so the pipeline's own stages reach clients too.
+
+extension SplatClientTests {
+
+    static let inFlightStatuses = [
+        "uploading",
+        "preview_extracting",
+        "preview_generating",
+        "preview_compressing",
+        "preview_ready",
+        "extracting_frames",
+        "running_sfm",
+        "estimating_poses",
+        "training",
+        "exporting",
+        "compressing",
+        "processing",
+    ]
+
+    static let terminalStatuses = ["complete", "failed", "cancelled"]
+
+    /// Decode a scene whose `status` is `raw`.
+    func scene(withStatus raw: String) async throws -> Scene {
+        MockURLProtocol.mockResponses["/v1/scenes/status-\(raw)"] =
+            (200, scenePayload(id: "status-\(raw)", status: raw))
+        return try await makeClient().getScene(id: "status-\(raw)")
+    }
+
+    func testEveryInFlightServerStatusIsProcessing() async throws {
+        for raw in Self.inFlightStatuses {
+            let scene = try await scene(withStatus: raw)
+
+            XCTAssertEqual(scene.status.rawValue, raw)
+            XCTAssertTrue(scene.isProcessing, "\(raw) is in flight")
+        }
+    }
+
+    func testTerminalServerStatusesAreNotProcessing() async throws {
+        for raw in Self.terminalStatuses {
+            let scene = try await scene(withStatus: raw)
+
+            XCTAssertFalse(scene.isProcessing, "\(raw) is terminal")
+        }
+    }
+
+    func testEveryServerStatusHasAName() {
+        let named = Set(SceneStatus.allCases.map(\.rawValue))
+
+        XCTAssertEqual(named, Set(Self.inFlightStatuses + Self.terminalStatuses))
+    }
+
+    func testFutureStatusCountsAsProcessing() async throws {
+        // Anything that isn't terminal is still in flight, even a stage this
+        // SDK has never heard of.
+        let scene = try await scene(withStatus: "some_future_stage")
+
+        XCTAssertTrue(scene.isProcessing)
     }
 }

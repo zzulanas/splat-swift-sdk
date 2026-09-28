@@ -4,9 +4,11 @@ import Foundation
 
 /// Errors thrown by SplatKit API operations.
 ///
-/// A failed HTTP response carries an ``APIError`` with the API's error code,
-/// message, HTTP status and request ID. Network failures are thrown as
-/// `URLError`.
+/// A failed HTTP response is ``unauthorized(_:)``, ``notFound(_:)``,
+/// ``rateLimited(_:)`` or ``requestFailed(_:)``, each carrying an
+/// ``APIError`` with the API's error code, message, HTTP status and request
+/// ID. Network failures are thrown as `URLError`; a cancelled task throws
+/// `CancellationError` or `URLError.cancelled`.
 public enum SplatError: Error, LocalizedError, Sendable {
 
     /// The API key is missing, invalid, or revoked (HTTP 401).
@@ -15,20 +17,27 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// The requested resource was not found (HTTP 404).
     case notFound(APIError)
 
-    /// Too many requests (HTTP 429). ``APIError/retryAfter`` holds the delay
-    /// the server asked for, when it sent one.
+    /// Too many requests (HTTP 429).
+    ///
+    /// A ``APIError/code`` of `quota_exceeded` means the plan's monthly limit
+    /// is used up, so retrying won't help until the next period. Otherwise it
+    /// is a rate limit: wait ``APIError/retryAfter`` when the server sent it.
     case rateLimited(APIError)
 
-    /// Any other failed response: 5xx server errors, and 4xx client errors
-    /// such as `conflict` (409) or `insufficient_credits` (402).
-    /// Branch on ``APIError/code``.
-    case serverError(APIError)
+    /// Any other failed response, 4xx or 5xx: e.g. `conflict` (409),
+    /// `insufficient_credits` (402) or `internal_error` (500). Branch on
+    /// ``APIError/code`` or ``APIError/statusCode``.
+    case requestFailed(APIError)
 
     /// The response body could not be decoded.
     case decodingError(Error)
 
-    /// The video upload failed.
+    /// The video upload failed without a response, e.g. the connection
+    /// dropped. An upload rejected with an error status is ``requestFailed(_:)``.
     case uploadFailed(Error)
+
+    /// ``SplatScanner`` could not record. No request was made.
+    case captureFailed(String)
 
     /// Scene processing failed on the server. Final: the job will not finish.
     case processingFailed(String)
@@ -41,6 +50,7 @@ public enum SplatError: Error, LocalizedError, Sendable {
     case timeout
 
     /// The scene was cancelled on the server, e.g. by ``SplatClient/cancelScene(id:)``.
+    /// A cancelled task throws `CancellationError` or `URLError.cancelled` instead.
     case cancelled
 
     /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
@@ -60,14 +70,16 @@ public enum SplatError: Error, LocalizedError, Sendable {
         case .notFound(let error):
             return "Not found: \(error.message)" + error.requestSuffix
         case .rateLimited(let error):
-            return "Rate limited. Please wait before retrying." + error.requestSuffix
-        case .serverError(let error):
+            return error.rateLimitSummary + error.requestSuffix
+        case .requestFailed(let error):
             let kind = HTTPStatus.serverError.contains(error.statusCode) ? "Server error" : "Request failed"
             return "\(kind) (\(error.statusCode)): \(error.message)" + error.requestSuffix
         case .decodingError(let error):
             return "Failed to decode response: \(error.localizedDescription)"
         case .uploadFailed(let error):
             return "Upload failed: \(error.localizedDescription)"
+        case .captureFailed(let message):
+            return "Capture failed: \(message)"
         case .processingFailed(let message):
             return "Processing failed: \(message)"
         case .timeout:
@@ -90,11 +102,11 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// ```
     public var apiError: APIError? {
         switch self {
-        case .unauthorized(let error), .notFound(let error), .rateLimited(let error), .serverError(let error):
+        case .unauthorized(let error), .notFound(let error), .rateLimited(let error), .requestFailed(let error):
             return error
         case .interrupted(_, let underlying):
             return (underlying as? SplatError)?.apiError
-        case .decodingError, .uploadFailed, .processingFailed, .timeout, .cancelled:
+        case .decodingError, .uploadFailed, .captureFailed, .processingFailed, .timeout, .cancelled:
             return nil
         }
     }
@@ -128,8 +140,10 @@ extension SplatError {
         /// HTTP status code, e.g. `409`.
         public let statusCode: Int
 
-        /// The API's machine-readable error code, such as `"conflict"`,
-        /// `"insufficient_credits"` or `"quota_exceeded"`.
+        /// The API's machine-readable error code: `invalid_input`,
+        /// `unauthorized`, `forbidden`, `not_found`, `conflict`,
+        /// `payload_too_large`, `insufficient_credits`, `rate_limited`,
+        /// `quota_exceeded`, `internal_error` or `upstream_error`.
         ///
         /// `nil` when the body was not an API error envelope: a request that
         /// failed schema validation, an edge rate limit, or a storage upload
@@ -161,6 +175,19 @@ extension SplatError {
             self.retryAfter = retryAfter
         }
 
+        /// The server's own words when it sent an API error (e.g. a quota's
+        /// upgrade prompt), otherwise a generic note with the requested delay.
+        var rateLimitSummary: String {
+            if code != nil {
+                return message
+            }
+            guard let retryAfter else {
+                return "Rate limited. Please wait before retrying."
+            }
+            let seconds = Int(retryAfter)
+            return "Rate limited. Retry after \(seconds) \(seconds == 1 ? "second" : "seconds")."
+        }
+
         /// Appended to error descriptions so support requests carry the ID.
         var requestSuffix: String {
             guard let requestID else {
@@ -175,8 +202,26 @@ extension SplatError {
 
 extension SplatError.APIError {
 
-    /// Message used when a failed response has an empty body.
-    static let unknownMessage = "Unknown error."
+    /// Longest plain-text body used as a message. Longer bodies, and HTML
+    /// pages from an edge proxy, become the status's reason phrase instead.
+    static let maxTextMessageLength = 200
+
+    /// RFC 9110 §15 reason phrases for statuses the API or its edge return.
+    static let reasonPhrases: [Int: String] = [
+        400: "Bad Request",
+        401: "Unauthorized",
+        402: "Payment Required",
+        403: "Forbidden",
+        404: "Not Found",
+        409: "Conflict",
+        413: "Content Too Large",
+        422: "Unprocessable Content",
+        429: "Too Many Requests",
+        500: "Internal Server Error",
+        502: "Bad Gateway",
+        503: "Service Unavailable",
+        504: "Gateway Timeout",
+    ]
 
     /// Read a failed response: the API's error envelope when present,
     /// otherwise a validation failure or the raw body text.
@@ -199,20 +244,26 @@ extension SplatError.APIError {
 
         self.init(
             statusCode: response.statusCode,
-            message: Self.message(from: body, decoder: decoder),
+            message: Self.message(from: body, statusCode: response.statusCode, decoder: decoder),
             requestID: headerRequestID,
             retryAfter: retryAfter
         )
     }
 
     /// Message for a body that is not an error envelope.
-    private static func message(from body: Data, decoder: JSONDecoder) -> String {
+    private static func message(from body: Data, statusCode: Int, decoder: JSONDecoder) -> String {
         if let failure = try? decoder.decode(ValidationFailure.self, from: body), !failure.error.issues.isEmpty {
             return failure.error.issues.map(\.summary).joined(separator: "; ")
         }
 
+        // A short plain-text body is the best message available; an empty
+        // body or an HTML error page is not something to show a user.
         let text = String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? unknownMessage : text
+        let isReadable = !text.isEmpty && !text.hasPrefix("<") && text.count <= maxTextMessageLength
+        guard !isReadable else {
+            return text
+        }
+        return reasonPhrases[statusCode] ?? "HTTP \(statusCode)"
     }
 
     /// Delay from a `Retry-After` value: delay-seconds (`"60"`) or an
@@ -598,7 +649,7 @@ final class APIClient: Sendable {
 
             // Storage answered, not the API: there is no envelope or request ID.
             guard HTTPStatus.success.contains(httpResponse.statusCode) else {
-                throw SplatError.serverError(SplatError.APIError(
+                throw SplatError.requestFailed(SplatError.APIError(
                     statusCode: httpResponse.statusCode,
                     message: "Upload returned status \(httpResponse.statusCode)."
                 ))
@@ -640,7 +691,7 @@ final class APIClient: Sendable {
         case HTTPStatus.tooManyRequests:
             return .rateLimited(error)
         default:
-            return .serverError(error)
+            return .requestFailed(error)
         }
     }
 }

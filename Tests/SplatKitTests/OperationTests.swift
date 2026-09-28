@@ -38,8 +38,8 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().createScene(preset: .fast) }
 
-        guard case .serverError(let apiError) = error else {
-            return XCTFail("Expected .serverError, got \(String(describing: error))")
+        guard case .requestFailed(let apiError) = error else {
+            return XCTFail("Expected .requestFailed, got \(String(describing: error))")
         }
         XCTAssertEqual(apiError.statusCode, 422)
         XCTAssertEqual(apiError.code, "invalid_input")
@@ -105,8 +105,8 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().deleteScene(id: Fixture.sceneID) }
 
-        guard case .serverError(let apiError) = error else {
-            return XCTFail("Expected .serverError, got \(String(describing: error))")
+        guard case .requestFailed(let apiError) = error else {
+            return XCTFail("Expected .requestFailed, got \(String(describing: error))")
         }
         XCTAssertEqual(apiError.statusCode, 403)
         XCTAssertEqual(apiError.code, "forbidden")
@@ -199,8 +199,8 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().cancelScene(id: Fixture.sceneID) }
 
-        guard case .serverError(let apiError) = error else {
-            return XCTFail("Expected .serverError, got \(String(describing: error))")
+        guard case .requestFailed(let apiError) = error else {
+            return XCTFail("Expected .requestFailed, got \(String(describing: error))")
         }
         XCTAssertEqual(apiError.statusCode, 409)
         XCTAssertEqual(apiError.message, "Cannot cancel scene in 'complete' state.")
@@ -315,5 +315,61 @@ extension SplatClientTests {
             return XCTFail("Expected .unauthorized, got \(String(describing: error))")
         }
         XCTAssertEqual(apiError.requestID, Fixture.requestID)
+    }
+}
+
+// MARK: - Process payload limits
+//
+// The process route accepts 5–1,000 ARKit poses and up to 50,000 LiDAR points
+// (processSceneBodySchema in api/src/routes/schemas.ts); anything outside is a
+// 400 for the whole launch, after the source is already uploaded.
+
+extension SplatClientTests {
+
+    /// A pose like SplatScanner records: sequential frame names, 10 per second.
+    func makePose(_ index: Int) -> ARKitPose {
+        ARKitPose(
+            timestamp: Double(index) / 10,
+            filePath: String(format: "frame_%06d.jpg", index),
+            transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+            intrinsics: [1440, 0, 960, 0, 1440, 720, 0, 0, 1],
+            width: 1920,
+            height: 1440
+        )
+    }
+
+    /// Launch with `poses` and `points`, returning the JSON body sent.
+    func launchBody(poses: [ARKitPose]? = nil, points: [[Float]]? = nil) async throws -> [String: Any] {
+        MockURLProtocol.stub("\(Fixture.scenePath)/process", .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.completeScene))
+
+        _ = try await makeClient().processScene(id: Fixture.sceneID, arkitPoses: poses, lidarPoints: points)
+
+        return try jsonBody(MockURLProtocol.requests(to: "\(Fixture.scenePath)/process").first)
+    }
+
+    func testLongCaptureIsThinnedToThePoseLimit() async throws {
+        // A 150-second scan at SplatScanner's ~10 poses per second.
+        let body = try await launchBody(poses: (0..<1500).map(makePose))
+
+        let names = (body["arkit_poses"] as? [[String: Any]])?.compactMap { $0["file_path"] as? String }
+        XCTAssertEqual(names?.count, 1000)
+        // Evenly spaced like the pipeline's own thinning: index int(i × 1.5).
+        XCTAssertEqual(names?.prefix(3), ["frame_000000.jpg", "frame_000001.jpg", "frame_000003.jpg"])
+        XCTAssertEqual(names?.last, "frame_001498.jpg")
+    }
+
+    func testTooFewPosesAreNotSent() async throws {
+        let body = try await launchBody(poses: (0..<4).map(makePose))
+
+        XCTAssertNil(body["arkit_poses"])
+    }
+
+    func testLidarPointsAreThinnedToTheLimit() async throws {
+        let points = (0..<60_000).map { [Float($0), 0, 0] }
+
+        let body = try await launchBody(points: points)
+
+        XCTAssertEqual((body["lidar_points"] as? [[Double]])?.count, 50_000)
     }
 }
