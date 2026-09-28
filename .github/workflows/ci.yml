@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Swift package + example app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version && xcodebuild -version
+
+      - name: Package tests
+        run: swift test
+
+      # Unsigned simulator build: proves the example compiles against this
+      # revision of the package without any signing identity.
+      - name: Example app
+        run: >
+          xcodebuild build
+          -project Examples/SplatCapture/SplatCapture.xcodeproj
+          -scheme SplatCapture
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
