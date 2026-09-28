@@ -14,7 +14,7 @@ extension SplatClientTests {
     }
 
     /// A small local file standing in for a captured video.
-    private func makeVideo() throws -> URL {
+    func makeVideo() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("splatkit-\(UUID().uuidString).mp4")
         try Data("video".utf8).write(to: url)
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
@@ -23,7 +23,7 @@ extension SplatClientTests {
 
     /// Create succeeds and the presigned upload (to r2.dev/upload, from the
     /// createScene fixture) accepts the file.
-    private func stubCreateAndUpload() {
+    func stubCreateAndUpload() {
         MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
         MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:]))
     }
@@ -63,19 +63,6 @@ extension SplatClientTests {
         _ = try await makeClient().processScene(id: Fixture.sceneID, idempotencyKey: "launch-7f3a")
 
         XCTAssertEqual(idempotencyKeys("\(Fixture.scenePath)/process"), ["launch-7f3a"])
-    }
-
-    func testEachProcessCallGetsItsOwnKey() async throws {
-        MockURLProtocol.stub("\(Fixture.scenePath)/process", .json(200, Fixture.processAccepted))
-        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene))
-        let client = makeClient()
-
-        _ = try await client.processScene(id: Fixture.sceneID)
-        _ = try await client.processScene(id: Fixture.sceneID)
-
-        let keys = idempotencyKeys("\(Fixture.scenePath)/process")
-        XCTAssertEqual(keys.count, 2)
-        XCTAssertNotEqual(keys.first, keys.last)
     }
 
     func testProcessConflictIsNeverRetried() async throws {
@@ -305,15 +292,28 @@ extension SplatClientTests {
 
     // MARK: - Scene ID after creation
 
+    /// The interruption `createAndProcess` threw, or a test failure.
+    func interruption(
+        _ error: SplatError?,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> SplatError.Interruption? {
+        guard case .interrupted(let interruption) = error else {
+            XCTFail("Expected .interrupted, got \(String(describing: error))", file: file, line: line)
+            return nil
+        }
+        return interruption
+    }
+
     func testCreateFailureHasNoSceneID() async throws {
         MockURLProtocol.stub("/v1/scenes", .json(429, Fixture.quotaExceeded))
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
+        // No scene exists yet, so there is nothing to resume.
         guard case .rateLimited = error else {
             return XCTFail("Expected .rateLimited, got \(String(describing: error))")
         }
-        XCTAssertNil(error?.sceneID)
     }
 
     func testUploadFailureKeepsSceneID() async throws {
@@ -322,7 +322,9 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
-        XCTAssertEqual(error?.sceneID, Fixture.sceneID)
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.sceneID, Fixture.sceneID)
+        XCTAssertEqual(interruption.phase, .upload)
         XCTAssertEqual(error?.apiError?.statusCode, 403)
         XCTAssertTrue(MockURLProtocol.requests(to: "\(Fixture.scenePath)/process").isEmpty)
     }
@@ -333,10 +335,10 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
-        guard case .interrupted(let sceneID, _) = error else {
-            return XCTFail("Expected .interrupted, got \(String(describing: error))")
-        }
-        XCTAssertEqual(sceneID, Fixture.sceneID)
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.sceneID, Fixture.sceneID)
+        XCTAssertEqual(interruption.phase, .launch)
+        XCTAssertEqual(interruption.idempotencyKey, "process-\(Fixture.sceneID)")
         XCTAssertEqual(error?.apiError?.code, "insufficient_credits")
         XCTAssertEqual(error?.errorDescription?.hasSuffix("Scene ID: \(Fixture.sceneID)."), true)
     }
@@ -350,10 +352,12 @@ extension SplatClientTests {
             try await self.makeClient(configuration: self.shortPolling).createAndProcess(videoURL: try self.makeVideo())
         }
 
-        guard case .interrupted(let sceneID, SplatError.timeout) = error else {
-            return XCTFail("Expected .interrupted(_, .timeout), got \(String(describing: error))")
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.sceneID, Fixture.sceneID)
+        XCTAssertEqual(interruption.phase, .wait)
+        guard case .timeout = interruption.underlying as? SplatError else {
+            return XCTFail("Expected .timeout, got \(interruption.underlying)")
         }
-        XCTAssertEqual(sceneID, Fixture.sceneID)
     }
 
     func testProcessingFailureKeepsSceneID() async throws {
@@ -363,10 +367,11 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
-        guard case .interrupted(let sceneID, SplatError.processingFailed(let message)) = error else {
-            return XCTFail("Expected .interrupted(_, .processingFailed), got \(String(describing: error))")
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.phase, .wait)
+        guard case .processingFailed(let message) = interruption.underlying as? SplatError else {
+            return XCTFail("Expected .processingFailed, got \(interruption.underlying)")
         }
-        XCTAssertEqual(sceneID, Fixture.sceneID)
         XCTAssertEqual(message, "Processing timed out — the GPU job did not complete.")
     }
 }

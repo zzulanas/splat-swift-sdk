@@ -297,16 +297,16 @@ public final class SplatClient: Sendable {
     /// (GLOMAP/COLMAP) and uses the poses directly, which is significantly faster.
     /// The API infers `sfm.backend = "none"` from the presence of `arkit_poses`.
     ///
-    /// Processing is paid, so every call sends an `Idempotency-Key`, and
-    /// transient failures (network, 429, 5xx) are retried with the same key:
-    /// the API replays the original launch rather than charging again.
+    /// Processing is paid, and the API launches a scene at most once. Every
+    /// call sends an `Idempotency-Key`, by default `process-<scene ID>`, and
+    /// network failures, 5xx and rate limits are retried with it. So calling
+    /// `processScene` again for the same scene with the same inputs, after a
+    /// dropped connection or an app restart, replays the original launch
+    /// instead of charging again, or starts it if it never went through.
     ///
-    /// Without `idempotencyKey`, each call generates its own key, which does
-    /// not survive an app restart. To resume safely after one, persist a key
-    /// with the scene ID and pass it here: the same key and inputs replay the
-    /// launch. A different key or different inputs for a scene that already
-    /// has a launch fail with `conflict` (409), which is never retried; the
-    /// scene is already processing, so resume with ``waitForScene(id:onProgress:)``.
+    /// A launch with different inputs, or a different key, for a scene that
+    /// is already launched fails with `conflict` (409), which is never
+    /// retried: resume with ``waitForScene(id:onProgress:)`` instead.
     ///
     /// The route accepts 5–1,000 poses and up to 50,000 LiDAR points. Longer
     /// captures are thinned evenly to fit; fewer than 5 poses are not sent,
@@ -319,8 +319,9 @@ public final class SplatClient: Sendable {
     ///   - lidarPoints: Optional LiDAR points, each `[x, y, z]` or `[x, y, z, r, g, b]`.
     ///   - enableLOD: Whether to generate LOD chunks. Defaults to `false`.
     ///   - idempotencyKey: 1–128 printable ASCII characters, no spaces.
-    ///     Defaults to a new UUID for this call.
-    /// - Returns: The scene with updated status (typically `.processing`).
+    ///     Defaults to `process-<scene ID>`, which is the same for every call.
+    /// - Returns: The API's acknowledgement. The launch is accepted and charged;
+    ///   follow it with ``waitForScene(id:onProgress:)``.
     /// - Throws: ``SplatError`` on API errors; `URLError` on network errors
     ///   that persist through retries.
     public func processScene(
@@ -329,22 +330,36 @@ public final class SplatClient: Sendable {
         lidarPoints: [[Float]]? = nil,
         enableLOD: Bool = false,
         idempotencyKey: String? = nil
-    ) async throws -> Scene {
+    ) async throws -> SceneLaunch {
         let body = ProcessSceneBody(enableLOD: enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
+        let key = idempotencyKey ?? Self.launchKey(for: id)
 
-        // The process endpoint returns { status, sceneId, message }
-        // but we want to return a full Scene, so we fetch it after triggering
-        let _: ProcessSceneData = try await api.request(
+        // Nothing else is read after the launch: once the API accepts it, it
+        // is charged, and a failed follow-up read must not look like a failure.
+        let launch = try await api.request(
             ProcessSceneData.self,
             path: APIPath.scene(id, .process),
             method: .post,
             body: body,
-            idempotencyKey: idempotencyKey ?? UUID().uuidString
+            idempotencyKey: key
         )
 
-        // Fetch the full scene to return
-        return try await getScene(id: id)
+        return SceneLaunch(
+            sceneID: launch.sceneId,
+            status: SceneStatus(rawValue: launch.status),
+            message: launch.message,
+            idempotencyKey: key
+        )
     }
+
+    /// The default launch key. The API allows one launch per scene
+    /// (scene_launches.scene_id is its primary key), so one fixed key per
+    /// scene makes every repeat a replay rather than a 409.
+    static func launchKey(for sceneID: String) -> String {
+        launchKeyPrefix + sceneID
+    }
+
+    private static let launchKeyPrefix = "process-"
 
     // MARK: - Get Scene
 
@@ -554,17 +569,23 @@ public final class SplatClient: Sendable {
 
     /// Poll a scene until processing finishes.
     ///
-    /// Use it to resume after ``SplatError/interrupted(sceneID:underlying:)``
-    /// or an app restart, without paying for another job.
+    /// Use it to resume a launched scene after ``SplatError/interrupted(_:)``
+    /// or an app restart, without paying for another job. Network failures,
+    /// 5xx and rate limits don't end the wait: they say nothing about the job,
+    /// so polling carries on until the deadline.
     ///
     /// - Parameters:
     ///   - id: The scene ID.
     ///   - onProgress: Optional callback with each polled status and progress.
     /// - Returns: The completed scene.
-    /// - Throws: ``SplatError/timeout`` if ``Configuration/pollingTimeout``
+    /// - Throws: ``SplatError/notStarted`` at once if the scene is still
+    ///           `uploading`: no job exists to wait for.
+    ///           ``SplatError/timeout`` if ``Configuration/pollingTimeout``
     ///           passes first; the job may still finish, so call again to keep waiting.
     ///           ``SplatError/processingFailed(_:)`` if the server reports failure.
     ///           ``SplatError/cancelled`` if the scene was cancelled.
+    ///           An API error for a rejected request, e.g. ``SplatError/notFound(_:)``.
+    ///           `CancellationError` if the task is cancelled.
     public func waitForScene(
         id: String,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
@@ -593,10 +614,10 @@ public final class SplatClient: Sendable {
     /// }
     /// ```
     ///
-    /// Once the scene exists, any failure is thrown as
-    /// ``SplatError/interrupted(sceneID:underlying:)`` carrying its ID, so you
-    /// can resume with ``waitForScene(id:onProgress:)`` instead of paying for
-    /// another job.
+    /// Once the scene exists, any failure, including cancellation, is thrown
+    /// as ``SplatError/interrupted(_:)``. Its ``SplatError/Interruption`` says
+    /// which step failed, what was charged, and how to resume without paying
+    /// for another job.
     ///
     /// - Parameters:
     ///   - videoURL: Local file URL of the video to upload.
@@ -607,10 +628,10 @@ public final class SplatClient: Sendable {
     ///   - onProgress: Optional callback for status updates during polling.
     /// - Returns: The completed scene.
     /// - Throws: The creation error if the scene could not be created.
-    ///           Afterwards, ``SplatError/interrupted(sceneID:underlying:)``
-    ///           wrapping the cause, e.g. ``SplatError/timeout`` when polling
-    ///           outlasts ``Configuration/pollingTimeout`` or
-    ///           ``SplatError/processingFailed(_:)`` if the pipeline fails.
+    ///           Afterwards, ``SplatError/interrupted(_:)`` wrapping the cause:
+    ///           e.g. ``SplatError/timeout`` when polling outlasts
+    ///           ``Configuration/pollingTimeout``, ``SplatError/processingFailed(_:)``
+    ///           if the pipeline fails, or `CancellationError`.
     public func createAndProcess(
         videoURL: URL,
         title: String? = nil,
@@ -620,7 +641,9 @@ public final class SplatClient: Sendable {
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
     ) async throws -> Scene {
         // 1. Create scene
-        let (sceneId, uploadURL) = try await createScene(title: title, preset: preset)
+        let (sceneID, uploadURL) = try await createScene(title: title, preset: preset)
+        let key = Self.launchKey(for: sceneID)
+        var phase = SplatError.Interruption.Phase.upload
 
         do {
             // 2. Upload video
@@ -629,14 +652,28 @@ public final class SplatClient: Sendable {
             onProgress?(.uploading, 100)
 
             // 3. Trigger processing
-            _ = try await processScene(id: sceneId, arkitPoses: arkitPoses, lidarPoints: lidarPoints, enableLOD: preset.enableLOD)
+            phase = .launch
+            _ = try await processScene(
+                id: sceneID,
+                arkitPoses: arkitPoses,
+                lidarPoints: lidarPoints,
+                enableLOD: preset.enableLOD,
+                idempotencyKey: key
+            )
 
             // 4. Poll until complete or failed
-            return try await waitForScene(id: sceneId, onProgress: onProgress)
+            phase = .wait
+            return try await waitForScene(id: sceneID, onProgress: onProgress)
         } catch {
-            // The scene exists, and once processing starts it is paid for:
-            // hand its ID back so the caller resumes instead of starting over.
-            throw SplatError.interrupted(sceneID: sceneId, underlying: error)
+            // The scene exists, and once launched it is paid for: say where it
+            // stopped so the caller resumes instead of starting over.
+            let cause = Task.isCancelled ? CancellationError() : error
+            throw SplatError.interrupted(SplatError.Interruption(
+                sceneID: sceneID,
+                phase: phase,
+                idempotencyKey: key,
+                underlying: cause
+            ))
         }
     }
 }

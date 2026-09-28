@@ -33,9 +33,11 @@ extension SplatClient {
         /// ``SplatClient/processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``.
         /// `0` turns retries off. Defaults to 3.
         ///
-        /// Only network failures, 429 and 5xx responses are retried, with
-        /// exponential backoff and jitter. A `Retry-After` of up to 60 seconds
-        /// is waited out; a longer one is thrown to the caller.
+        /// Only network failures, 5xx responses and rate limits are retried,
+        /// with exponential backoff and jitter; a used-up quota is not. A
+        /// `Retry-After` of up to 60 seconds is waited out; a longer one is
+        /// thrown to the caller. Polling does its own waiting: it rides out
+        /// failures until ``pollingTimeout``.
         public var maxRetries: Int = Defaults.maxRetries
 
         /// A configuration with the default values.

@@ -7,9 +7,13 @@ import Foundation
 /// Backs ``SplatClient/waitForScene(id:onProgress:)`` and
 /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``.
 ///
-/// - Interval and timeout come from ``SplatClient/Configuration``.
-/// - Each status read is a GET, so transient failures are retried.
-/// - Respects Swift Concurrency cancellation.
+///   poll ──> complete ─────────────> return
+///     │      failed / cancelled ───> throw (the server's outcome)
+///     │      uploading ────────────> throw .notStarted (no job exists)
+///     │      any other status ─────> wait the interval, poll again
+///     └─ fails: network, 5xx, 429 ─> no news; wait the interval (or Retry-After)
+///               other 4xx ─────────> throw (the request itself is wrong)
+///   deadline passes ───────────────> throw .timeout (the job may still finish)
 final class PollingTask: Sendable {
 
     /// How often to poll for status updates (in seconds).
@@ -20,6 +24,9 @@ final class PollingTask: Sendable {
 
     /// Clock and sleep; replaced in tests.
     let timing: Timing
+
+    /// URL failures that no amount of waiting fixes: the request can't be made.
+    private static let fatalURLErrors: Set<URLError.Code> = [.badURL, .unsupportedURL]
 
     /// Creates a polling task with the given interval and timeout.
     ///
@@ -43,6 +50,8 @@ final class PollingTask: Sendable {
     /// - Throws: ``SplatError/timeout`` if the scene doesn't finish within the timeout.
     ///           ``SplatError/processingFailed(_:)`` if the scene enters the `failed` state.
     ///           ``SplatError/cancelled`` if the scene was cancelled.
+    ///           ``SplatError/notStarted`` if the scene is still `uploading`.
+    ///           The API error for a rejected request, e.g. ``SplatError/notFound(_:)``.
     ///           `CancellationError` if the task is cancelled.
     func poll(
         sceneId: String,
@@ -55,11 +64,27 @@ final class PollingTask: Sendable {
             // Check for task cancellation
             try Task.checkCancellation()
 
-            let scene: Scene = try await client.request(
-                Scene.self,
-                path: APIPath.scene(sceneId),
-                method: .get
-            )
+            let scene: Scene
+            do {
+                scene = try await client.request(
+                    Scene.self,
+                    path: APIPath.scene(sceneId),
+                    method: .get
+                )
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                guard Self.leavesOutcomeUnknown(error) else {
+                    throw error
+                }
+
+                // An outage says nothing about a job that is already paid
+                // for and running: keep waiting, as long as the server asks.
+                let requested = (error as? SplatError)?.apiError?.retryAfter ?? 0
+                try await sleep(max(interval, requested), until: deadline)
+                continue
+            }
 
             // Report progress
             onProgress?(scene.status, scene.processingPct)
@@ -74,14 +99,37 @@ final class PollingTask: Sendable {
                 )
             case .cancelled:
                 throw SplatError.cancelled
+            case .uploading:
+                // Only a launch moves a scene past uploading, so no job exists.
+                throw SplatError.notStarted
             default:
                 break
             }
 
             // Wait before next poll
-            try await timing.sleep(interval)
+            try await sleep(interval, until: deadline)
         }
 
         throw SplatError.timeout
+    }
+
+    /// Whether a failed status read leaves the job's outcome unknown, so
+    /// waiting goes on: network failures, 5xx, rate limits, and unreadable
+    /// responses. A rejected request (any other 4xx, e.g. a revoked key or a
+    /// deleted scene) or a URL that can't be requested ends the wait.
+    static func leavesOutcomeUnknown(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return !fatalURLErrors.contains(urlError.code)
+        }
+        guard (error as? SplatError)?.apiError != nil else {
+            return true
+        }
+        return APIClient.isTransient(error)
+    }
+
+    /// Sleep for `seconds`, but never past `deadline`.
+    private func sleep(_ seconds: TimeInterval, until deadline: Date) async throws {
+        let remaining = deadline.timeIntervalSince(timing.now())
+        try await timing.sleep(max(0, min(seconds, remaining)))
     }
 }

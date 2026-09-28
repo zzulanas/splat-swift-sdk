@@ -162,6 +162,14 @@ final class FakeClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current = Date(timeIntervalSince1970: 1_790_000_000)
     private var slept: [TimeInterval] = []
+    private var cancelNextSleep = false
+
+    /// Cancel whichever task sleeps next, as if the user left mid-wait.
+    func cancelOnNextSleep() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelNextSleep = true
+    }
 
     /// Every delay slept so far, in order.
     var sleeps: [TimeInterval] {
@@ -185,7 +193,16 @@ final class FakeClock: @unchecked Sendable {
     }
 
     private func sleep(_ seconds: TimeInterval) throws {
+        lock.lock()
+        let cancel = cancelNextSleep
+        cancelNextSleep = false
+        lock.unlock()
+
+        if cancel {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
         try Task.checkCancellation()
+
         lock.lock()
         defer { lock.unlock() }
         slept.append(seconds)
@@ -339,7 +356,7 @@ final class SplatClientTests: XCTestCase {
 
         let scene = try await client.processScene(id: "abc123", arkitPoses: padded)
 
-        XCTAssertEqual(scene.id, "abc123")
+        XCTAssertEqual(scene.sceneID, "abc123")
         XCTAssertEqual(scene.status, .processing)
 
         // Verify the process request body contains ARKit poses

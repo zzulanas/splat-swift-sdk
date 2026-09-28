@@ -26,7 +26,7 @@ struct Timing: Sendable {
 //   attempt ──ok──> result
 //      │
 //      └─fails─> repeatable request?   (GET, or carries Idempotency-Key)
-//                  └─> transient?       (network, 429, 5xx)
+//                  └─> transient?       (network, 5xx, 429 unless the quota is used up)
 //                        └─> retries left and Retry-After ≤ 60 s?
 //                              └─> sleep (Retry-After, or jittered backoff) ──> attempt
 
@@ -41,6 +41,10 @@ extension APIClient {
     /// Longest `Retry-After` waited out automatically. A longer one is
     /// thrown so the caller decides instead of the call blocking.
     static let maxRetryAfter: TimeInterval = 60
+
+    /// Code of a 429 whose plan quota is used up; retrying can't help until
+    /// the next period (quota.ts and processScene in the API).
+    static let quotaExceededCode = "quota_exceeded"
 
     /// Transport failures where the network, not the request, failed.
     static let transientURLErrors: Set<URLError.Code> = [
@@ -61,6 +65,11 @@ extension APIClient {
             do {
                 return try await attempt()
             } catch {
+                // However the cancellation surfaced (URLError.cancelled from
+                // URLSession, or our own sleep), report it the way Swift does.
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 guard retries < limit, let delay = retryDelay(after: error, retries: retries) else {
                     throw error
                 }
@@ -78,23 +87,31 @@ extension APIClient {
             || request.value(forHTTPHeaderField: HTTPHeader.idempotencyKey) != nil
     }
 
+    /// Whether another attempt may succeed: the network failed, the server
+    /// erred (5xx), or a rate limit (429) other than a used-up quota.
+    ///
+    /// Any other 4xx means the request itself is wrong, e.g. a 409 for an
+    /// idempotency key reused with a different body.
+    static func isTransient(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return transientURLErrors.contains(urlError.code)
+        }
+
+        guard let apiError = (error as? SplatError)?.apiError else {
+            return false
+        }
+        if apiError.statusCode == HTTPStatus.tooManyRequests {
+            return apiError.code != quotaExceededCode
+        }
+        return HTTPStatus.serverError.contains(apiError.statusCode)
+    }
+
     /// Seconds to wait before the next attempt, or `nil` when `error` is final.
     func retryDelay(after error: Error, retries: Int) -> TimeInterval? {
-        if let urlError = error as? URLError {
-            return Self.transientURLErrors.contains(urlError.code) ? backoff(retries) : nil
-        }
-
-        // 4xx other than 429 means the request itself is wrong, e.g. a 409
-        // for an idempotency key reused with a different body.
-        guard let apiError = (error as? SplatError)?.apiError else {
+        guard Self.isTransient(error) else {
             return nil
         }
-        let status = apiError.statusCode
-        guard status == HTTPStatus.tooManyRequests || HTTPStatus.serverError.contains(status) else {
-            return nil
-        }
-
-        guard let retryAfter = apiError.retryAfter else {
+        guard let retryAfter = (error as? SplatError)?.apiError?.retryAfter else {
             return backoff(retries)
         }
         return retryAfter <= Self.maxRetryAfter ? retryAfter : nil

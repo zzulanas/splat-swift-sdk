@@ -7,8 +7,8 @@ import Foundation
 /// A failed HTTP response is ``unauthorized(_:)``, ``notFound(_:)``,
 /// ``rateLimited(_:)`` or ``requestFailed(_:)``, each carrying an
 /// ``APIError`` with the API's error code, message, HTTP status and request
-/// ID. Network failures are thrown as `URLError`; a cancelled task throws
-/// `CancellationError` or `URLError.cancelled`.
+/// ID. Network failures are thrown as `URLError`, and a cancelled task throws
+/// `CancellationError`.
 public enum SplatError: Error, LocalizedError, Sendable {
 
     /// The API key is missing, invalid, or revoked (HTTP 401).
@@ -39,7 +39,10 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// ``SplatScanner`` could not record. No request was made.
     case captureFailed(String)
 
-    /// Scene processing failed on the server. Final: the job will not finish.
+    /// Processing failed on the server.
+    ///
+    /// Usually final. Rarely, the pipeline completes a scene the stale-job
+    /// sweep had failed, so ``SplatClient/getScene(id:)`` has the last word.
     case processingFailed(String)
 
     /// This client stopped waiting for processing after
@@ -50,18 +53,18 @@ public enum SplatError: Error, LocalizedError, Sendable {
     case timeout
 
     /// The scene was cancelled on the server, e.g. by ``SplatClient/cancelScene(id:)``.
-    /// A cancelled task throws `CancellationError` or `URLError.cancelled` instead.
+    /// A cancelled task throws `CancellationError` instead.
     case cancelled
 
+    /// Processing never started for this scene: its source was not uploaded,
+    /// or no ``SplatClient/processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``
+    /// call went through. There is no job to wait for.
+    case notStarted
+
     /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
-    /// failed after creating the scene.
-    ///
-    /// The scene still exists, and so does its processing job if one was
-    /// started and paid for. Resume with
-    /// ``SplatClient/waitForScene(id:onProgress:)`` instead of creating
-    /// another. `underlying` says why it stopped: ``timeout`` means the job may
-    /// still finish; ``processingFailed(_:)`` means the server reported failure.
-    case interrupted(sceneID: String, underlying: Error)
+    /// failed after creating its scene. The ``Interruption`` says which step
+    /// failed, what was charged, and how to resume.
+    case interrupted(Interruption)
 
     public var errorDescription: String? {
         switch self {
@@ -86,8 +89,10 @@ public enum SplatError: Error, LocalizedError, Sendable {
             return "Timed out waiting for processing. The scene may still finish."
         case .cancelled:
             return "The scene was cancelled."
-        case .interrupted(let sceneID, let underlying):
-            return "\(underlying.localizedDescription) Scene ID: \(sceneID)."
+        case .notStarted:
+            return "Processing hasn't started for this scene."
+        case .interrupted(let interruption):
+            return interruption.summary
         }
     }
 
@@ -104,29 +109,11 @@ public enum SplatError: Error, LocalizedError, Sendable {
         switch self {
         case .unauthorized(let error), .notFound(let error), .rateLimited(let error), .requestFailed(let error):
             return error
-        case .interrupted(_, let underlying):
-            return (underlying as? SplatError)?.apiError
-        case .decodingError, .uploadFailed, .captureFailed, .processingFailed, .timeout, .cancelled:
+        case .interrupted(let interruption):
+            return (interruption.underlying as? SplatError)?.apiError
+        case .decodingError, .uploadFailed, .captureFailed, .processingFailed, .timeout, .cancelled, .notStarted:
             return nil
         }
-    }
-
-    /// The scene that already exists when
-    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
-    /// fails, so the caller can resume it.
-    ///
-    /// ```swift
-    /// } catch let error as SplatError {
-    ///     if let sceneID = error.sceneID {
-    ///         let scene = try await client.waitForScene(id: sceneID)
-    ///     }
-    /// }
-    /// ```
-    public var sceneID: String? {
-        guard case .interrupted(let sceneID, _) = self else {
-            return nil
-        }
-        return sceneID
     }
 }
 
@@ -657,6 +644,10 @@ final class APIClient: Sendable {
         } catch let error as SplatError {
             throw error
         } catch {
+            // A cancelled task stops the upload; report it as Swift reports cancellation.
+            if Task.isCancelled || error is CancellationError {
+                throw CancellationError()
+            }
             throw SplatError.uploadFailed(error)
         }
     }

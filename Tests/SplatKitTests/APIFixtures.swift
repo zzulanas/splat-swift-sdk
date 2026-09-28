@@ -101,6 +101,44 @@ enum Fixture {
     }
     """
 
+    /// GET /v1/scenes/{id} → 200 for a scene whose source never finished
+    /// uploading, so nothing was launched: getSceneStatus returns the base
+    /// record for `uploading` (api/src/lib/scenes.ts), and only the launch
+    /// transaction moves a scene on (claim_scene_launch in
+    /// supabase/migrations/20260928120000_atomic_scene_launches.sql).
+    static let uploadingScene = """
+    {
+        "data": {
+            "id": "a1b2c3d4e5f6",
+            "title": "My living room",
+            "address": null,
+            "status": "uploading",
+            "is_public": false,
+            "thumbnail_r2_key": null,
+            "num_gaussians": null,
+            "ssim": null,
+            "psnr_holdout": null,
+            "ssim_holdout": null,
+            "processing_stage": null,
+            "processing_pct": null,
+            "processing_error": null,
+            "viewer_url": null,
+            "download_url": null,
+            "format": null,
+            "lod_meta_url": null,
+            "created_at": "\(createdAt)",
+            "updated_at": "\(createdAt)"
+        },
+        "meta": { "request_id": "550e8400-e29b-41d4-a716-446655440000" }
+    }
+    """
+
+    /// GET /v1/scenes/{id} → 200 when getSceneStatus's live Modal probe
+    /// fails: it returns the raw database status, here the pipeline stage
+    /// estimating_poses (pipeline/progress.py STAGE_ORDER).
+    static let estimatingPosesScene = trainingScene
+        .replacingOccurrences(of: "\"status\": \"processing\"", with: "\"status\": \"estimating_poses\"")
+
     /// GET /v1/scenes/{id} → 200 after the stale-job sweep failed the scene:
     /// processing_error is FAILED_TIMEOUT_MSG from the sweep in
     /// web/src/app/api/internal/scenes/sweep-stale/route.ts.
@@ -383,6 +421,10 @@ enum Fixture {
         "internal_error",
         "Unable to confirm the launch reservation. Retry the same request."
     )
+
+    /// 429 from processScene when the monthly processing quota is used up
+    /// (the claim's quota_exceeded outcome in api/src/lib/scenes.ts).
+    static let processQuotaExceeded = error("quota_exceeded", "Monthly scene processing limit reached.")
 
     /// 402 from processScene's credit reservation (api/src/lib/scenes.ts).
     static let insufficientCredits = error(
