@@ -72,6 +72,65 @@ enum Fixture {
     }
     """
 
+    /// GET /v1/scenes/{id} → 200 while processing: the processing branch of
+    /// getSceneStatus in api/src/lib/scenes.ts (live stage and percent).
+    static let trainingScene = """
+    {
+        "data": {
+            "id": "a1b2c3d4e5f6",
+            "title": "My living room",
+            "address": null,
+            "status": "processing",
+            "is_public": false,
+            "thumbnail_r2_key": null,
+            "num_gaussians": null,
+            "ssim": null,
+            "psnr_holdout": null,
+            "ssim_holdout": null,
+            "processing_stage": "training",
+            "processing_pct": 45,
+            "processing_error": null,
+            "viewer_url": null,
+            "download_url": null,
+            "format": null,
+            "lod_meta_url": null,
+            "created_at": "\(createdAt)",
+            "updated_at": "\(updatedAt)"
+        },
+        "meta": { "request_id": "550e8400-e29b-41d4-a716-446655440000" }
+    }
+    """
+
+    /// GET /v1/scenes/{id} → 200 after the stale-job sweep failed the scene:
+    /// processing_error is FAILED_TIMEOUT_MSG from the sweep in
+    /// web/src/app/api/internal/scenes/sweep-stale/route.ts.
+    static let sweptScene = """
+    {
+        "data": {
+            "id": "a1b2c3d4e5f6",
+            "title": "My living room",
+            "address": null,
+            "status": "failed",
+            "is_public": false,
+            "thumbnail_r2_key": null,
+            "num_gaussians": null,
+            "ssim": null,
+            "psnr_holdout": null,
+            "ssim_holdout": null,
+            "processing_stage": "training",
+            "processing_pct": 45,
+            "processing_error": "Processing timed out — the GPU job did not complete.",
+            "viewer_url": null,
+            "download_url": null,
+            "format": null,
+            "lod_meta_url": null,
+            "created_at": "\(createdAt)",
+            "updated_at": "\(updatedAt)"
+        },
+        "meta": { "request_id": "550e8400-e29b-41d4-a716-446655440000" }
+    }
+    """
+
     /// GET /v1/scenes?limit=2 → 200, first of two pages. Item keys: the column
     /// list listScenes selects; meta: the list route in api/src/routes/scenes.ts
     /// (next_cursor is the last item's created_at). Spec: SceneListResponse.
@@ -317,6 +376,13 @@ enum Fixture {
 
     /// 409 from cancelScene (api/src/lib/scenes.ts).
     static let cancelConflict = error("conflict", "Cannot cancel scene in 'complete' state.")
+
+    /// 503 from processScene when the launch reservation can't be confirmed
+    /// (api/src/lib/scenes.ts); the API asks for the same request again.
+    static let launchUnconfirmed = error(
+        "internal_error",
+        "Unable to confirm the launch reservation. Retry the same request."
+    )
 
     /// 402 from processScene's credit reservation (api/src/lib/scenes.ts).
     static let insufficientCredits = error(

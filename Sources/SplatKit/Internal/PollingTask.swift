@@ -4,11 +4,11 @@ import Foundation
 
 /// Polls a scene's status at regular intervals until it reaches a terminal state.
 ///
-/// Used internally by ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:onProgress:)``
-/// to wait for processing to complete.
+/// Backs ``SplatClient/waitForScene(id:onProgress:)`` and
+/// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``.
 ///
-/// - Polls every 10 seconds by default.
-/// - Times out after 20 minutes (configurable).
+/// - Interval and timeout come from ``SplatClient/Configuration``.
+/// - Each status read is a GET, so transient failures are retried.
 /// - Respects Swift Concurrency cancellation.
 final class PollingTask: Sendable {
 
@@ -18,14 +18,19 @@ final class PollingTask: Sendable {
     /// Maximum time to wait before throwing ``SplatError/timeout`` (in seconds).
     let timeout: TimeInterval
 
+    /// Clock and sleep; replaced in tests.
+    let timing: Timing
+
     /// Creates a polling task with the given interval and timeout.
     ///
     /// - Parameters:
-    ///   - interval: Seconds between polls. Default is 10.
-    ///   - timeout: Maximum wait time in seconds. Default is 1200 (20 minutes).
-    init(interval: TimeInterval = 10, timeout: TimeInterval = 1200) {
+    ///   - interval: Seconds between polls.
+    ///   - timeout: Maximum wait time in seconds.
+    ///   - timing: Clock and sleep to use.
+    init(interval: TimeInterval, timeout: TimeInterval, timing: Timing = .live) {
         self.interval = interval
         self.timeout = timeout
+        self.timing = timing
     }
 
     /// Poll the scene until it reaches a terminal state.
@@ -34,18 +39,19 @@ final class PollingTask: Sendable {
     ///   - sceneId: The scene ID to poll.
     ///   - client: The API client to use for requests.
     ///   - onProgress: Optional callback invoked after each poll with the current status and progress percentage.
-    /// - Returns: The final ``Scene`` in a terminal state (`complete` or `failed`).
-    /// - Throws: ``SplatError/timeout`` if the scene doesn't complete within the timeout.
+    /// - Returns: The final ``Scene`` once it is `complete`.
+    /// - Throws: ``SplatError/timeout`` if the scene doesn't finish within the timeout.
     ///           ``SplatError/processingFailed(_:)`` if the scene enters the `failed` state.
-    ///           ``SplatError/cancelled`` if the task is cancelled.
+    ///           ``SplatError/cancelled`` if the scene was cancelled.
+    ///           `CancellationError` if the task is cancelled.
     func poll(
         sceneId: String,
         using client: APIClient,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
     ) async throws -> Scene {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = timing.now().addingTimeInterval(timeout)
 
-        while Date() < deadline {
+        while timing.now() < deadline {
             // Check for task cancellation
             try Task.checkCancellation()
 
@@ -73,7 +79,7 @@ final class PollingTask: Sendable {
             }
 
             // Wait before next poll
-            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            try await timing.sleep(interval)
         }
 
         throw SplatError.timeout

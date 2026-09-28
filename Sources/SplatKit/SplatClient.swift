@@ -131,23 +131,67 @@ public final class SplatClient: Sendable {
     private let api: APIClient
     private let poller: PollingTask
 
+    /// The production API.
+    @usableFromInline
+    static let productionURL = URL(string: "https://api.splat-3d.com")!
+
     /// Create a new Splat API client.
     ///
     /// - Parameters:
     ///   - apiKey: Your Splat API key (starts with `s3d_`).
     ///   - baseURL: API base URL. Defaults to `https://api.splat-3d.com`.
     ///   - session: URLSession to use for requests. Defaults to `.shared`.
-    ///   - pollingInterval: Seconds between status polls. Defaults to 10.
-    ///   - pollingTimeout: Maximum seconds to wait for processing. Defaults to 1200 (20 min).
-    public init(
+    ///   - pollingInterval: Seconds between status polls. Defaults to
+    ///     ``Configuration/pollingInterval``.
+    ///   - pollingTimeout: Maximum seconds to wait for processing. Defaults to
+    ///     ``Configuration/pollingTimeout`` (165 minutes).
+    public convenience init(
         apiKey: String,
-        baseURL: URL = URL(string: "https://api.splat-3d.com")!,
+        baseURL: URL = SplatClient.productionURL,
         session: URLSession = .shared,
-        pollingInterval: TimeInterval = 10,
-        pollingTimeout: TimeInterval = 1200
+        pollingInterval: TimeInterval? = nil,
+        pollingTimeout: TimeInterval? = nil
     ) {
-        self.api = APIClient(apiKey: apiKey, baseURL: baseURL, session: session)
-        self.poller = PollingTask(interval: pollingInterval, timeout: pollingTimeout)
+        var configuration = Configuration()
+        if let pollingInterval {
+            configuration.pollingInterval = pollingInterval
+        }
+        if let pollingTimeout {
+            configuration.pollingTimeout = pollingTimeout
+        }
+        self.init(apiKey: apiKey, baseURL: baseURL, session: session, configuration: configuration)
+    }
+
+    /// Create a new Splat API client with explicit timeouts and retries.
+    ///
+    /// - Parameters:
+    ///   - apiKey: Your Splat API key (starts with `s3d_`).
+    ///   - baseURL: API base URL. Defaults to `https://api.splat-3d.com`.
+    ///   - session: URLSession to use for requests. Defaults to `.shared`.
+    ///   - configuration: Request timeout, polling, and retry settings.
+    public convenience init(
+        apiKey: String,
+        baseURL: URL = SplatClient.productionURL,
+        session: URLSession = .shared,
+        configuration: Configuration
+    ) {
+        self.init(apiKey: apiKey, baseURL: baseURL, session: session, configuration: configuration, timing: .live)
+    }
+
+    /// Designated initializer; tests inject `timing` so nothing waits.
+    init(apiKey: String, baseURL: URL, session: URLSession, configuration: Configuration, timing: Timing) {
+        self.api = APIClient(
+            apiKey: apiKey,
+            baseURL: baseURL,
+            session: session,
+            configuration: configuration,
+            timing: timing
+        )
+        self.poller = PollingTask(
+            interval: configuration.pollingInterval,
+            timeout: configuration.pollingTimeout,
+            timing: timing
+        )
     }
 
     // MARK: - Create Scene
@@ -156,7 +200,7 @@ public final class SplatClient: Sendable {
     ///
     /// After creating the scene, upload your video file to the returned `uploadURL`
     /// using ``uploadVideo(from:to:)``, then trigger processing with
-    /// ``processScene(id:arkitPoses:enableLOD:)``.
+    /// ``processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``.
     ///
     /// - Parameters:
     ///   - title: Optional title for the scene.
@@ -219,18 +263,34 @@ public final class SplatClient: Sendable {
     /// (GLOMAP/COLMAP) and uses the poses directly, which is significantly faster.
     /// The API infers `sfm.backend = "none"` from the presence of `arkit_poses`.
     ///
+    /// Processing is paid, so every call sends an `Idempotency-Key`, and
+    /// transient failures (network, 429, 5xx) are retried with the same key:
+    /// the API replays the original launch rather than charging again.
+    ///
+    /// Without `idempotencyKey`, each call generates its own key, which does
+    /// not survive an app restart. To resume safely after one, persist a key
+    /// with the scene ID and pass it here: the same key and inputs replay the
+    /// launch. A different key or different inputs for a scene that already
+    /// has a launch fail with `conflict` (409), which is never retried; the
+    /// scene is already processing, so resume with ``waitForScene(id:onProgress:)``.
+    ///
     /// - Parameters:
     ///   - id: The scene ID to process.
     ///   - arkitPoses: Optional array of ARKit camera poses. When provided,
     ///     the API automatically skips SfM and uses the poses directly.
+    ///   - lidarPoints: Optional LiDAR points, each `[x, y, z]` or `[x, y, z, r, g, b]`.
     ///   - enableLOD: Whether to generate LOD chunks. Defaults to `false`.
+    ///   - idempotencyKey: 1–128 printable ASCII characters, no spaces.
+    ///     Defaults to a new UUID for this call.
     /// - Returns: The scene with updated status (typically `.processing`).
-    /// - Throws: ``SplatError`` on network or API errors.
+    /// - Throws: ``SplatError`` on API errors; `URLError` on network errors
+    ///   that persist through retries.
     public func processScene(
         id: String,
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
-        enableLOD: Bool = false
+        enableLOD: Bool = false,
+        idempotencyKey: String? = nil
     ) async throws -> Scene {
         let body = ProcessSceneBody(
             enableLod: enableLOD ? true : nil,
@@ -244,7 +304,8 @@ public final class SplatClient: Sendable {
             ProcessSceneData.self,
             path: APIPath.scene(id, .process),
             method: .post,
-            body: body
+            body: body,
+            idempotencyKey: idempotencyKey ?? UUID().uuidString
         )
 
         // Fetch the full scene to return
@@ -356,7 +417,7 @@ public final class SplatClient: Sendable {
     ///
     /// The API creates and starts a new, versioned scene ("Kitchen" becomes
     /// "Kitchen v2") and leaves the original unchanged. The new scene is
-    /// charged like ``processScene(id:arkitPoses:lidarPoints:enableLOD:)``,
+    /// charged like ``processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``,
     /// so this call is never retried automatically: repeating it starts
     /// another scene.
     ///
@@ -455,6 +516,28 @@ public final class SplatClient: Sendable {
         try await api.requestVoid(path: APIPath.scene(id), method: .delete)
     }
 
+    // MARK: - Wait for Scene
+
+    /// Poll a scene until processing finishes.
+    ///
+    /// Use it to resume after ``SplatError/interrupted(sceneID:underlying:)``
+    /// or an app restart, without paying for another job.
+    ///
+    /// - Parameters:
+    ///   - id: The scene ID.
+    ///   - onProgress: Optional callback with each polled status and progress.
+    /// - Returns: The completed scene.
+    /// - Throws: ``SplatError/timeout`` if ``Configuration/pollingTimeout``
+    ///           passes first; the job may still finish, so call again to keep waiting.
+    ///           ``SplatError/processingFailed(_:)`` if the server reports failure.
+    ///           ``SplatError/cancelled`` if the scene was cancelled.
+    public func waitForScene(
+        id: String,
+        onProgress: ((SceneStatus, Double?) -> Void)? = nil
+    ) async throws -> Scene {
+        try await poller.poll(sceneId: id, using: api, onProgress: onProgress)
+    }
+
     // MARK: - Create and Process (Convenience)
 
     /// Create, upload, process, and wait for a scene in a single call.
@@ -463,7 +546,7 @@ public final class SplatClient: Sendable {
     /// 1. Creates the scene and gets an upload URL
     /// 2. Uploads the video file
     /// 3. Triggers processing (with optional ARKit poses)
-    /// 4. Polls for completion (every 10 seconds, up to 20 minutes)
+    /// 4. Polls for completion (see ``Configuration``)
     ///
     /// ```swift
     /// let scene = try await client.createAndProcess(
@@ -476,14 +559,23 @@ public final class SplatClient: Sendable {
     /// }
     /// ```
     ///
+    /// Once the scene exists, any failure is thrown as
+    /// ``SplatError/interrupted(sceneID:underlying:)`` carrying its ID, so you
+    /// can resume with ``waitForScene(id:onProgress:)`` instead of paying for
+    /// another job.
+    ///
     /// - Parameters:
     ///   - videoURL: Local file URL of the video to upload.
     ///   - title: Optional title for the scene.
     ///   - preset: Processing quality preset. Defaults to `.standard`.
     ///   - arkitPoses: Optional ARKit camera poses to skip SfM.
+    ///   - lidarPoints: Optional LiDAR points from ``SplatScanner``.
     ///   - onProgress: Optional callback for status updates during polling.
     /// - Returns: The completed scene.
-    /// - Throws: ``SplatError/timeout`` if processing exceeds 20 minutes.
+    /// - Throws: The creation error if the scene could not be created.
+    ///           Afterwards, ``SplatError/interrupted(sceneID:underlying:)``
+    ///           wrapping the cause, e.g. ``SplatError/timeout`` when polling
+    ///           outlasts ``Configuration/pollingTimeout`` or
     ///           ``SplatError/processingFailed(_:)`` if the pipeline fails.
     public func createAndProcess(
         videoURL: URL,
@@ -496,21 +588,21 @@ public final class SplatClient: Sendable {
         // 1. Create scene
         let (sceneId, uploadURL) = try await createScene(title: title, preset: preset)
 
-        // 2. Upload video
-        onProgress?(.uploading, 0)
-        try await uploadVideo(from: videoURL, to: uploadURL)
-        onProgress?(.uploading, 100)
+        do {
+            // 2. Upload video
+            onProgress?(.uploading, 0)
+            try await uploadVideo(from: videoURL, to: uploadURL)
+            onProgress?(.uploading, 100)
 
-        // 3. Trigger processing
-        _ = try await processScene(id: sceneId, arkitPoses: arkitPoses, lidarPoints: lidarPoints, enableLOD: preset.enableLOD)
+            // 3. Trigger processing
+            _ = try await processScene(id: sceneId, arkitPoses: arkitPoses, lidarPoints: lidarPoints, enableLOD: preset.enableLOD)
 
-        // 4. Poll until complete or failed
-        let scene = try await poller.poll(
-            sceneId: sceneId,
-            using: api,
-            onProgress: onProgress
-        )
-
-        return scene
+            // 4. Poll until complete or failed
+            return try await waitForScene(id: sceneId, onProgress: onProgress)
+        } catch {
+            // The scene exists, and once processing starts it is paid for:
+            // hand its ID back so the caller resumes instead of starting over.
+            throw SplatError.interrupted(sceneID: sceneId, underlying: error)
+        }
     }
 }

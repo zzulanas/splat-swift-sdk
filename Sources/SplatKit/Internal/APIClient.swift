@@ -30,14 +30,28 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// The video upload failed.
     case uploadFailed(Error)
 
-    /// Scene processing failed on the server.
+    /// Scene processing failed on the server. Final: the job will not finish.
     case processingFailed(String)
 
-    /// A polling operation exceeded the maximum wait time.
+    /// This client stopped waiting for processing after
+    /// ``SplatClient/Configuration/pollingTimeout``.
+    ///
+    /// Not a server-side failure: the job may still finish. Check again with
+    /// ``SplatClient/waitForScene(id:onProgress:)`` or ``SplatClient/getScene(id:)``.
     case timeout
 
-    /// The request was cancelled (e.g., `Task.cancel()`).
+    /// The scene was cancelled on the server, e.g. by ``SplatClient/cancelScene(id:)``.
     case cancelled
+
+    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
+    /// failed after creating the scene.
+    ///
+    /// The scene still exists, and so does its processing job if one was
+    /// started and paid for. Resume with
+    /// ``SplatClient/waitForScene(id:onProgress:)`` instead of creating
+    /// another. `underlying` says why it stopped: ``timeout`` means the job may
+    /// still finish; ``processingFailed(_:)`` means the server reported failure.
+    case interrupted(sceneID: String, underlying: Error)
 
     public var errorDescription: String? {
         switch self {
@@ -57,9 +71,11 @@ public enum SplatError: Error, LocalizedError, Sendable {
         case .processingFailed(let message):
             return "Processing failed: \(message)"
         case .timeout:
-            return "Operation timed out."
+            return "Timed out waiting for processing. The scene may still finish."
         case .cancelled:
-            return "Operation was cancelled."
+            return "The scene was cancelled."
+        case .interrupted(let sceneID, let underlying):
+            return "\(underlying.localizedDescription) Scene ID: \(sceneID)."
         }
     }
 
@@ -76,9 +92,29 @@ public enum SplatError: Error, LocalizedError, Sendable {
         switch self {
         case .unauthorized(let error), .notFound(let error), .rateLimited(let error), .serverError(let error):
             return error
+        case .interrupted(_, let underlying):
+            return (underlying as? SplatError)?.apiError
         case .decodingError, .uploadFailed, .processingFailed, .timeout, .cancelled:
             return nil
         }
+    }
+
+    /// The scene that already exists when
+    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
+    /// fails, so the caller can resume it.
+    ///
+    /// ```swift
+    /// } catch let error as SplatError {
+    ///     if let sceneID = error.sceneID {
+    ///         let scene = try await client.waitForScene(id: sceneID)
+    ///     }
+    /// }
+    /// ```
+    public var sceneID: String? {
+        guard case .interrupted(let sceneID, _) = self else {
+            return nil
+        }
+        return sceneID
     }
 }
 
@@ -318,6 +354,8 @@ enum HTTPHeader {
     static let userAgent = "User-Agent"
     static let requestID = "X-Request-Id"
     static let retryAfter = "Retry-After"
+    /// Lets the API replay a paid `process` call instead of charging twice.
+    static let idempotencyKey = "Idempotency-Key"
     /// Format the download endpoint actually served: `sog` or `ply`.
     static let splatFormat = "X-Splat-Format"
 
@@ -370,11 +408,23 @@ final class APIClient: Sendable {
     let session: URLSession
     let decoder: JSONDecoder
     let encoder: JSONEncoder
+    let requestTimeout: TimeInterval
+    let maxRetries: Int
+    let timing: Timing
 
-    init(apiKey: String, baseURL: URL, session: URLSession = .shared) {
+    init(
+        apiKey: String,
+        baseURL: URL,
+        session: URLSession = .shared,
+        configuration: SplatClient.Configuration = .init(),
+        timing: Timing = .live
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.session = session
+        self.requestTimeout = configuration.requestTimeout
+        self.maxRetries = configuration.maxRetries
+        self.timing = timing
 
         let decoder = JSONDecoder()
         // Note: we do NOT use .convertFromSnakeCase here because Scene and other
@@ -419,7 +469,8 @@ final class APIClient: Sendable {
         path: String,
         method: HTTPMethod,
         query: [URLQueryItem] = [],
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        idempotencyKey: String? = nil
     ) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL),
               var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {
@@ -439,10 +490,11 @@ final class APIClient: Sendable {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: resolved)
+        var request = URLRequest(url: resolved, timeoutInterval: requestTimeout)
         request.httpMethod = method.rawValue
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: HTTPHeader.authorization)
         request.setValue(HTTPHeader.userAgentValue, forHTTPHeaderField: HTTPHeader.userAgent)
+        request.setValue(idempotencyKey, forHTTPHeaderField: HTTPHeader.idempotencyKey)
 
         if let body {
             request.setValue(HTTPHeader.jsonContentType, forHTTPHeaderField: HTTPHeader.contentType)
@@ -455,13 +507,17 @@ final class APIClient: Sendable {
     // MARK: - Request Execution
 
     /// Execute a request and decode the response envelope, returning `data`.
+    ///
+    /// GETs, and requests with an `idempotencyKey`, are retried on transient
+    /// failures (see ``withRetries(for:_:)``).
     func request<T: Decodable>(
         _ type: T.Type,
         path: String,
         method: HTTPMethod,
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        idempotencyKey: String? = nil
     ) async throws -> T {
-        let urlRequest = try buildRequest(path: path, method: method, body: body)
+        let urlRequest = try buildRequest(path: path, method: method, body: body, idempotencyKey: idempotencyKey)
         let (data, _) = try await send(urlRequest)
         return try decode(APIResponse<T>.self, from: data).data
     }
@@ -493,39 +549,45 @@ final class APIClient: Sendable {
     /// Stream a GET response body to a temporary file the caller must move.
     func download(path: String, query: [URLQueryItem]) async throws -> (URL, HTTPURLResponse) {
         let urlRequest = try buildRequest(path: path, method: .get, query: query)
-        let (fileURL, response) = try await session.download(for: urlRequest)
-        let httpResponse = try httpResponse(response)
 
-        guard HTTPStatus.success.contains(httpResponse.statusCode) else {
-            // Error bodies land in the file too; read the envelope, then discard it.
-            let body = (try? Data(contentsOf: fileURL)) ?? Data()
-            try? FileManager.default.removeItem(at: fileURL)
-            throw failure(for: httpResponse, body: body)
+        return try await withRetries(for: urlRequest) {
+            let (fileURL, response) = try await session.download(for: urlRequest)
+            let httpResponse = try httpResponse(response)
+
+            guard HTTPStatus.success.contains(httpResponse.statusCode) else {
+                // Error bodies land in the file too; read the envelope, then discard it.
+                let body = (try? Data(contentsOf: fileURL)) ?? Data()
+                try? FileManager.default.removeItem(at: fileURL)
+                throw failure(for: httpResponse, body: body)
+            }
+
+            return (fileURL, httpResponse)
         }
-
-        return (fileURL, httpResponse)
     }
 
-    /// Send a request and return the body of a 2xx response.
+    /// Send a request and return the body of a 2xx response, retrying
+    /// transient failures when the request is safe to repeat.
     ///
     /// - Throws: ``SplatError`` for any other status; `URLError` when the
     ///   request never got a response.
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = try httpResponse(response)
+        try await withRetries(for: request) {
+            let (data, response) = try await session.data(for: request)
+            let httpResponse = try httpResponse(response)
 
-        guard HTTPStatus.success.contains(httpResponse.statusCode) else {
-            throw failure(for: httpResponse, body: data)
+            guard HTTPStatus.success.contains(httpResponse.statusCode) else {
+                throw failure(for: httpResponse, body: data)
+            }
+
+            return (data, httpResponse)
         }
-
-        return (data, httpResponse)
     }
 
     // MARK: - Upload
 
     /// Upload a file to a presigned URL with a raw PUT request.
     func uploadFile(from fileURL: URL, to uploadURL: URL, contentType: String = "video/mp4") async throws {
-        var request = URLRequest(url: uploadURL)
+        var request = URLRequest(url: uploadURL, timeoutInterval: requestTimeout)
         request.httpMethod = HTTPMethod.put.rawValue
         request.setValue(contentType, forHTTPHeaderField: HTTPHeader.contentType)
         request.setValue(HTTPHeader.userAgentValue, forHTTPHeaderField: HTTPHeader.userAgent)
@@ -568,7 +630,7 @@ final class APIClient: Sendable {
 
     /// Map a non-2xx response to the ``SplatError`` case for its status.
     private func failure(for response: HTTPURLResponse, body: Data) -> SplatError {
-        let error = SplatError.APIError(response: response, body: body, decoder: decoder)
+        let error = SplatError.APIError(response: response, body: body, decoder: decoder, now: timing.now())
 
         switch response.statusCode {
         case HTTPStatus.unauthorized:
