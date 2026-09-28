@@ -36,28 +36,54 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   `estimatingPoses` and the `preview*` stages, and a stage it doesn't name
   keeps its raw value.
 - Once `createAndProcess` has created the scene, every failure is thrown as
-  `SplatError.interrupted(sceneID:underlying:)`, including upload, launch and
-  polling failures, timeouts and cancellation. **This compiles unchanged**:
-  `catch SplatError.timeout` or `catch SplatError.processingFailed` around
-  `createAndProcess` stops matching. Match the underlying error instead
-  (`catch SplatError.interrupted(let sceneID, SplatError.timeout)`) or read
-  `error.sceneID`. Exhaustive `switch`es over `SplatError` must handle the
-  new case.
+  `SplatError.interrupted(Interruption)`, whose `phase` (`upload`, `launch`,
+  `wait`), `idempotencyKey` and `underlying` error say how to resume. **Around
+  `createAndProcess`, these catches still compile but stop matching:**
+  - `catch is CancellationError`: a cancelled task arrives as `.interrupted`
+    with `underlying` `CancellationError`. SwiftUI `.task` code that ignores
+    cancellation should match
+    `SplatError.interrupted(let i) where i.underlying is CancellationError`.
+  - `catch let error as URLError`, including `URLError.cancelled`.
+  - `catch SplatError.uploadFailed`, `.unauthorized`, `.notFound`,
+    `.rateLimited`, `.requestFailed`, `.decodingError`, `.timeout`,
+    `.processingFailed` and `.cancelled`.
+  Match `.interrupted` and inspect `interruption.underlying` instead.
+  Exhaustive `switch`es over `SplatError` must also handle `.interrupted` and
+  `.notStarted`.
+- A cancelled task throws `CancellationError` from every call. It used to
+  surface as `URLError.cancelled` from a request, or as
+  `.uploadFailed(URLError.cancelled)` from an upload, so
+  `catch let error as URLError where error.code == .cancelled` **still
+  compiles but stops matching**.
+- `processScene` returns a `SceneLaunch`, the API's acknowledgement (scene ID,
+  status, message, idempotency key), instead of a `Scene` read after the
+  launch. That read could fail after the launch was already charged, and
+  report a paid launch as an error. `launch.status` still compiles; read the
+  scene with `getScene` or `waitForScene`.
+- `processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass
+  one, so repeating it for a scene replays the launch. A scene launched with
+  another key, or with none, answers a repeat with `conflict` (409).
+- `waitForScene` and `createAndProcess` throw the new `.notStarted` at once
+  for a scene still `uploading`, where no job exists. They used to poll it
+  until the timeout.
 - The default polling timeout is 165 minutes instead of 20. The API fails a
   job still processing after 150 minutes and checks every 10, so 20 minutes
   gave up on jobs that were still running.
 
 ### Added
 
-- Automatic retries for reads and `processScene`: network failures, 429 and
-  5xx, up to 3 retries with exponential backoff and jitter, honouring a
-  `Retry-After` of up to 60 seconds. Other writes are never retried.
-- `processScene(…, idempotencyKey:)`. Every launch sends an `Idempotency-Key`,
-  generated per call unless you pass one, and reuses it on retries.
+- Automatic retries for reads and `processScene`: network failures, 5xx and
+  rate limits, up to 3 retries with exponential backoff and jitter, honouring
+  a `Retry-After` of up to 60 seconds. A used-up quota and other writes are
+  never retried.
+- `processScene(…, idempotencyKey:)` and `SceneLaunch`. Every launch sends an
+  `Idempotency-Key`, `process-<scene ID>` by default, and reuses it on retries.
 - `SplatClient.Configuration` (`requestTimeout`, `pollingInterval`,
   `pollingTimeout`, `maxRetries`) and `init(apiKey:baseURL:session:configuration:)`.
-- `waitForScene(id:onProgress:)` to resume polling a scene, and
-  `SplatError.sceneID`.
+- `waitForScene(id:onProgress:)` to resume a launched scene. It keeps polling
+  through network failures, 5xx and rate limits until its deadline, and stops
+  on any other 4xx.
+- `SplatError.Interruption` (with `Phase`) and `SplatError.notStarted`.
 - `updateScene(id:_:)` with `SceneUpdate`, `retrainScene(id:preset:)`,
   `cancelScene(id:)`, `downloadScene(id:format:)` with `ModelFormat`,
   `getSceneThumbnail(id:)`, and `getUsage()` with `Usage`. The SDK now covers
@@ -81,6 +107,8 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - `SplatError.timeout` and `.cancelled` now document what throws them: the
   client giving up on polling, and a scene cancelled on the server.
 - `SplatError.apiError` looks through `.interrupted`.
+- `.processingFailed` is no longer documented as final: the pipeline can
+  complete a scene the stale-job sweep had failed.
 - Scene IDs are percent-encoded as a single path segment.
 - List cursors are percent-encoded in full. The API decodes a bare `+` in a
   query string as a space, which would corrupt the timestamp cursor's

@@ -116,27 +116,45 @@ For page-level control, pass each page's `nextCursor` back until it is `nil`. Tr
 
 ### Retries, Timeouts, and Resuming
 
-Reads and `processScene` retry network failures, 429 and 5xx responses up to three times with exponential backoff and jitter, waiting out a `Retry-After` of up to 60 seconds. Creating, retraining, updating, deleting and cancelling are never retried, because the API cannot deduplicate them yet.
+Reads and `processScene` retry network failures, 5xx responses and rate limits up to three times with exponential backoff and jitter, waiting out a `Retry-After` of up to 60 seconds. A used-up monthly quota (`quota_exceeded`) is not retried. Creating, retraining, updating, deleting and cancelling are never retried, because the API cannot deduplicate them yet.
 
-`processScene` sends an `Idempotency-Key`, so the API replays a retried launch instead of charging twice. The generated key lasts one call. To survive an app restart, store your own key with the scene ID and pass it again:
+The API launches a scene at most once. `processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass your own key. Calling it again for the same scene with the same inputs replays the original launch instead of charging twice, after a dropped connection or an app restart. So to survive a restart, persist the scene ID (and the capture you launch with):
 
 ```swift
-let key = UUID().uuidString  // persist alongside the scene ID
-let scene = try await client.processScene(id: sceneID, idempotencyKey: key)
+let launch = try await client.processScene(id: sceneID, arkitPoses: poses)
+let scene = try await client.waitForScene(id: sceneID)
 ```
 
-If `createAndProcess` fails after creating the scene, the error carries the scene's ID, so you can resume instead of paying for another job:
+`waitForScene` keeps polling through network failures, 5xx and rate limits until its deadline, because they say nothing about the job. It throws `SplatError.notStarted` at once for a scene that was never launched, `SplatError.timeout` when this client stops waiting (the job may still finish), and `SplatError.processingFailed` when the server reports a failure.
+
+If `createAndProcess` fails after creating the scene, it throws `SplatError.interrupted`. The `Interruption` says which step failed, what was charged, and how to resume:
 
 ```swift
 do {
-    let scene = try await client.createAndProcess(videoURL: videoURL)
-} catch SplatError.interrupted(let sceneID, SplatError.timeout) {
-    // This client stopped waiting; the server may still finish the job.
-    let scene = try await client.waitForScene(id: sceneID)
+    scene = try await client.createAndProcess(videoURL: videoURL, arkitPoses: poses)
+} catch SplatError.interrupted(let interruption) where interruption.underlying is CancellationError {
+    // The task was cancelled (e.g. a SwiftUI view went away). A launched job keeps running.
+} catch SplatError.interrupted(let interruption) {
+    switch interruption.phase {
+    case .launch:
+        // Charged at most once: the same key replays a launch that went through.
+        _ = try await client.processScene(
+            id: interruption.sceneID,
+            arkitPoses: poses,
+            idempotencyKey: interruption.idempotencyKey
+        )
+        scene = try await client.waitForScene(id: interruption.sceneID)
+    case .wait:
+        // Launched and charged; the job keeps running.
+        scene = try await client.waitForScene(id: interruption.sceneID)
+    default:
+        // .upload: nothing was charged, and the upload URL is gone. Start over.
+        try await client.deleteScene(id: interruption.sceneID)
+    }
 }
 ```
 
-`SplatError.timeout` means the client stopped waiting. `SplatError.processingFailed` means the server reported a failure. The polling timeout defaults to 165 minutes, just past the point where the API fails a job that is still running. Tune it with `SplatClient.Configuration`:
+The polling timeout defaults to 165 minutes, just past the point where the API fails a job that is still running. Tune it with `SplatClient.Configuration`:
 
 ```swift
 var configuration = SplatClient.Configuration()
@@ -166,8 +184,8 @@ do {
     // Stopped waiting for processing; the job may still finish
 } catch SplatError.processingFailed(let reason) {
     // Pipeline error
-} catch SplatError.interrupted(let sceneID, let underlying) {
-    // createAndProcess failed after creating sceneID; resume with waitForScene(id:)
+} catch SplatError.interrupted(let interruption) {
+    // createAndProcess failed after creating interruption.sceneID; see above
 }
 ```
 
