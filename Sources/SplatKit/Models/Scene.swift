@@ -165,7 +165,8 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     ///
     /// It serves SOG by default and PLY with `?format=ply`. It requires your
     /// API key as a Bearer token, so a browser, web view or `URLSession.shared`
-    /// gets a 401 from it.
+    /// gets a 401 from it: fetch the model with
+    /// ``SplatClient/downloadScene(id:format:)``.
     public let downloadURL: URL?
 
     /// Output format of the processed scene (e.g. "sog", "ply").

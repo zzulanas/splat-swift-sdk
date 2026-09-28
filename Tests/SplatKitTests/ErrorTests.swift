@@ -87,7 +87,7 @@ extension SplatClientTests {
         XCTAssertEqual(apiError.retryAfter, 60)
         XCTAssertNil(apiError.code)
         XCTAssertNil(apiError.requestID)
-        XCTAssertEqual(apiError.message, SplatError.APIError.unknownMessage)
+        XCTAssertEqual(apiError.message, "Too Many Requests")
     }
 
     func testRetryAfterParsesSecondsAndDates() throws {
@@ -125,5 +125,44 @@ extension SplatClientTests {
 
         let url = try XCTUnwrap(MockURLProtocol.capturedRequests.first?.url)
         XCTAssertEqual(url.absoluteString, "https://api.splat-3d.com/v1/scenes/a%2Fb%20c")
+    }
+}
+
+// MARK: - Messages shown to users
+
+extension SplatClientTests {
+
+    func testQuotaErrorShowsTheServersMessage() async throws {
+        // The upgrade prompt from enforceSceneCreateQuota (api/src/middleware/quota.ts).
+        MockURLProtocol.stub("/v1/scenes", .json(429, Fixture.quotaExceeded))
+
+        let error = await expectSplatError { try await self.makeClient().createScene() }
+
+        XCTAssertEqual(
+            error?.errorDescription,
+            "Monthly scene creation limit reached (10 scenes per month). Upgrade your plan for higher limits. Request ID: \(Fixture.requestID)."
+        )
+    }
+
+    func testEdgeRateLimitSaysWhenToRetry() async throws {
+        MockURLProtocol.stub("/v1/scenes", MockURLProtocol.Stub(statusCode: 429, body: Data(), headers: ["Retry-After": "60"]))
+
+        let error = await expectSplatError { try await self.makeClient().createScene() }
+
+        XCTAssertEqual(error?.errorDescription, "Rate limited. Retry after 60 seconds.")
+    }
+
+    func testHTMLErrorPageIsNotShownVerbatim() async throws {
+        // An edge or proxy error page, not an API response.
+        let page = "<html><head><title>502 Bad Gateway</title></head><body>" + String(repeating: "x", count: 4000) + "</body></html>"
+        MockURLProtocol.stub(Fixture.scenePath, MockURLProtocol.Stub(
+            statusCode: 502,
+            body: Data(page.utf8),
+            headers: ["Content-Type": "text/html"]
+        ))
+
+        let error = await expectSplatError { try await self.makeClient().getScene(id: Fixture.sceneID) }
+
+        XCTAssertEqual(error?.apiError?.message, "Bad Gateway")
     }
 }
