@@ -2,136 +2,112 @@ import Foundation
 
 // MARK: - SceneStatus
 
-/// Processing status of a scene.
+/// Processing status of a scene, as the API reports it.
 ///
-/// A scene progresses through these statuses during the processing pipeline:
+/// A scene moves through these statuses while it processes:
 ///
 /// ```
-/// uploading -> extracting_frames -> running_sfm -> training -> exporting -> compressing -> complete
-///                                                                                       -> failed
+/// uploading -> preview_extracting -> preview_generating -> preview_compressing
+///           -> extracting_frames -> estimating_poses -> training -> exporting -> compressing
+///           -> complete | failed | cancelled
 /// ```
-public enum SceneStatus: Codable, Sendable, CaseIterable {
-    /// Video is being uploaded to storage.
-    case uploading
+///
+/// The set is open. The API adds pipeline stages over time, and a status this
+/// SDK doesn't name still decodes with its raw value. Anything other than
+/// ``complete``, ``failed`` and ``cancelled`` is still in progress, so match the
+/// statuses you care about and handle the rest with `default`.
+public struct SceneStatus: RawRepresentable, Hashable, Codable, Sendable, CaseIterable, CustomStringConvertible {
 
-    /// Frames are being extracted from the uploaded video.
-    case extractingFrames
+    /// The status as the API sends it, e.g. `"estimating_poses"`.
+    public let rawValue: String
 
-    /// Structure from Motion is running (GLOMAP or ARKit poses).
-    case runningSfm
+    /// A status from its API value. Values this SDK doesn't name are kept as they are.
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
 
-    /// Gaussian splat model is being trained.
-    case training
+    // MARK: Before processing
 
-    /// Trained model is being exported.
-    case exporting
+    /// The scene exists and waits for its source. No processing job has started.
+    public static let uploading = SceneStatus(rawValue: "uploading")
 
-    /// Model is being compressed to SOG format.
-    case compressing
+    // MARK: Preview
 
-    /// Processing completed successfully.
-    case complete
+    /// Frames are being extracted for the fast preview.
+    public static let previewExtracting = SceneStatus(rawValue: "preview_extracting")
 
-    /// Processing failed. Check ``Scene/processingError`` for details.
-    case failed
+    /// The fast preview is being generated.
+    public static let previewGenerating = SceneStatus(rawValue: "preview_generating")
 
-    /// Processing was cancelled by the user.
-    case cancelled
-
-    /// Alias for backwards compatibility with API responses that use "processing".
-    case processing
+    /// The fast preview is being compressed.
+    public static let previewCompressing = SceneStatus(rawValue: "preview_compressing")
 
     /// A fast preview is viewable; full processing is still running.
-    case previewReady
+    public static let previewReady = SceneStatus(rawValue: "preview_ready")
 
-    /// An unknown status value received from the server.
-    case unknown(String)
+    // MARK: Full processing
 
-    // CaseIterable requires all cases — unknown is not enumerable, so provide known cases only
-    public static var allCases: [SceneStatus] {
-        [.uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .complete, .failed, .cancelled, .processing, .previewReady]
+    /// Frames are being extracted from the uploaded source.
+    public static let extractingFrames = SceneStatus(rawValue: "extracting_frames")
+
+    /// Camera poses are being estimated, by Structure from Motion or from ARKit poses.
+    public static let estimatingPoses = SceneStatus(rawValue: "estimating_poses")
+
+    /// Older name for ``estimatingPoses``, still stored for some scenes.
+    public static let runningSfm = SceneStatus(rawValue: "running_sfm")
+
+    /// The Gaussian splat model is being trained.
+    public static let training = SceneStatus(rawValue: "training")
+
+    /// The trained model is being exported.
+    public static let exporting = SceneStatus(rawValue: "exporting")
+
+    /// The model is being compressed to SOG.
+    public static let compressing = SceneStatus(rawValue: "compressing")
+
+    /// Processing is running. The API reports this while it reads live progress.
+    public static let processing = SceneStatus(rawValue: "processing")
+
+    // MARK: Terminal
+
+    /// Processing completed successfully.
+    public static let complete = SceneStatus(rawValue: "complete")
+
+    /// Processing failed. Check ``Scene/processingError`` for details.
+    public static let failed = SceneStatus(rawValue: "failed")
+
+    /// Processing was cancelled.
+    public static let cancelled = SceneStatus(rawValue: "cancelled")
+
+    /// Every status this SDK names, in pipeline order.
+    public static let allCases: [SceneStatus] = [
+        .uploading,
+        .previewExtracting,
+        .previewGenerating,
+        .previewCompressing,
+        .previewReady,
+        .extractingFrames,
+        .runningSfm,
+        .estimatingPoses,
+        .training,
+        .exporting,
+        .compressing,
+        .processing,
+        .complete,
+        .failed,
+        .cancelled,
+    ]
+
+    /// Statuses a scene never leaves on its own.
+    private static let terminal: Set<SceneStatus> = [.complete, .failed, .cancelled]
+
+    /// Whether processing has stopped: ``complete``, ``failed`` or ``cancelled``.
+    public var isTerminal: Bool {
+        Self.terminal.contains(self)
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let raw = try container.decode(String.self)
-        switch raw {
-        case "uploading": self = .uploading
-        case "extracting_frames": self = .extractingFrames
-        case "running_sfm": self = .runningSfm
-        case "training": self = .training
-        case "exporting": self = .exporting
-        case "compressing": self = .compressing
-        case "complete": self = .complete
-        case "failed": self = .failed
-        case "cancelled": self = .cancelled
-        case "processing": self = .processing
-        case "preview_ready": self = .previewReady
-        default: self = .unknown(raw)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .uploading: try container.encode("uploading")
-        case .extractingFrames: try container.encode("extracting_frames")
-        case .runningSfm: try container.encode("running_sfm")
-        case .training: try container.encode("training")
-        case .exporting: try container.encode("exporting")
-        case .compressing: try container.encode("compressing")
-        case .complete: try container.encode("complete")
-        case .failed: try container.encode("failed")
-        case .cancelled: try container.encode("cancelled")
-        case .processing: try container.encode("processing")
-        case .previewReady: try container.encode("preview_ready")
-        case .unknown(let raw): try container.encode(raw)
-        }
-    }
-}
-
-// MARK: - SceneStatus Equatable
-
-extension SceneStatus: Equatable {
-    public static func == (lhs: SceneStatus, rhs: SceneStatus) -> Bool {
-        switch (lhs, rhs) {
-        case (.uploading, .uploading): return true
-        case (.extractingFrames, .extractingFrames): return true
-        case (.runningSfm, .runningSfm): return true
-        case (.training, .training): return true
-        case (.exporting, .exporting): return true
-        case (.compressing, .compressing): return true
-        case (.complete, .complete): return true
-        case (.failed, .failed): return true
-        case (.cancelled, .cancelled): return true
-        case (.processing, .processing): return true
-        case (.previewReady, .previewReady): return true
-        case (.unknown(let a), .unknown(let b)): return a == b
-        default: return false
-        }
-    }
-}
-
-// MARK: - SceneStatus RawValue
-
-extension SceneStatus {
-    /// The raw string value of this status, matching the API wire format.
-    /// For `.unknown(raw)` cases, returns the raw string as received from the server.
-    public var rawValue: String {
-        switch self {
-        case .uploading: return "uploading"
-        case .extractingFrames: return "extracting_frames"
-        case .runningSfm: return "running_sfm"
-        case .training: return "training"
-        case .exporting: return "exporting"
-        case .compressing: return "compressing"
-        case .complete: return "complete"
-        case .failed: return "failed"
-        case .cancelled: return "cancelled"
-        case .processing: return "processing"
-        case .previewReady: return "preview_ready"
-        case .unknown(let raw): return raw
-        }
+    public var description: String {
+        rawValue
     }
 }
 
@@ -185,7 +161,11 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     /// backwards compatibility with older API responses.
     public let viewerURL: URL?
 
-    /// Download URL for the raw PLY file, or `nil` if not available.
+    /// API URL for the scene's 3D model, once processing is complete.
+    ///
+    /// It serves SOG by default and PLY with `?format=ply`. It requires your
+    /// API key as a Bearer token, so a browser, web view or `URLSession.shared`
+    /// gets a 401 from it.
     public let downloadURL: URL?
 
     /// Output format of the processed scene (e.g. "sog", "ply").
@@ -203,14 +183,11 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     /// Whether processing has failed.
     public var isFailed: Bool { status == .failed }
 
-    /// Whether the scene is currently being processed.
+    /// Whether the scene is still in progress: any status that isn't
+    /// terminal, including ``SceneStatus/uploading`` and stages this SDK
+    /// doesn't name.
     public var isProcessing: Bool {
-        switch status {
-        case .uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .processing, .previewReady:
-            return true
-        case .complete, .failed, .cancelled, .unknown:
-            return false
-        }
+        !status.isTerminal
     }
 
     // MARK: - Coding Keys
