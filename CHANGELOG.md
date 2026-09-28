@@ -23,9 +23,29 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - `SceneStatus` is no longer `RawRepresentable`: `SceneStatus(rawValue:)` is
   gone (`rawValue` remains), and exhaustive `switch`es must handle the new
   `.previewReady` and `.unknown(String)` cases.
+- Once `createAndProcess` has created the scene, every failure is thrown as
+  `SplatError.interrupted(sceneID:underlying:)`, including upload, launch and
+  polling failures, timeouts and cancellation. **This compiles unchanged**:
+  `catch SplatError.timeout` or `catch SplatError.processingFailed` around
+  `createAndProcess` stops matching. Match the underlying error instead
+  (`catch SplatError.interrupted(let sceneID, SplatError.timeout)`) or read
+  `error.sceneID`. Exhaustive `switch`es over `SplatError` must handle the
+  new case.
+- The default polling timeout is 165 minutes instead of 20. The API fails a
+  job still processing after 150 minutes and checks every 10, so 20 minutes
+  gave up on jobs that were still running.
 
 ### Added
 
+- Automatic retries for reads and `processScene`: network failures, 429 and
+  5xx, up to 3 retries with exponential backoff and jitter, honouring a
+  `Retry-After` of up to 60 seconds. Other writes are never retried.
+- `processScene(…, idempotencyKey:)`. Every launch sends an `Idempotency-Key`,
+  generated per call unless you pass one, and reuses it on retries.
+- `SplatClient.Configuration` (`requestTimeout`, `pollingInterval`,
+  `pollingTimeout`, `maxRetries`) and `init(apiKey:baseURL:session:configuration:)`.
+- `waitForScene(id:onProgress:)` to resume polling a scene, and
+  `SplatError.sceneID`.
 - `updateScene(id:_:)` with `SceneUpdate`, `retrainScene(id:preset:)`,
   `cancelScene(id:)`, `downloadScene(id:format:)` with `ModelFormat`,
   `getSceneThumbnail(id:)`, and `getUsage()` with `Usage`. The SDK now covers
@@ -43,9 +63,15 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 
 ### Changed
 
+- `SplatClient.init`'s `pollingInterval` and `pollingTimeout` are optional and
+  default to the `Configuration` values. Existing calls compile unchanged.
+- `SplatError.timeout` and `.cancelled` now document what throws them: the
+  client giving up on polling, and a scene cancelled on the server.
+- `SplatError.apiError` looks through `.interrupted`.
 - Scene IDs are percent-encoded as a single path segment.
 - List cursors are percent-encoded in full. The API decodes a bare `+` in a
-  query string as a space, which broke the timestamp cursor's `+00:00` offset.
+  query string as a space, which would corrupt the timestamp cursor's
+  `+00:00` offset.
 - A failed scene reports the API's `processing_error` as its failure message.
 
 ### Deprecated

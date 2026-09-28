@@ -79,7 +79,8 @@ let scene = try await client.createAndProcess(
 |--------|-------------|
 | `createScene(title:preset:)` | Create a scene and get a presigned upload URL |
 | `uploadVideo(from:to:)` | Upload a video file to the presigned URL |
-| `processScene(id:arkitPoses:lidarPoints:enableLOD:)` | Trigger GPU processing |
+| `processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)` | Trigger GPU processing |
+| `waitForScene(id:onProgress:)` | Poll a scene until processing finishes |
 | `getScene(id:)` | Get scene status and metadata |
 | `listScenePage(cursor:limit:)` | One page of scenes, newest first, with the next page's cursor |
 | `allScenes(pageSize:)` | Every scene, fetched a page at a time as you iterate |
@@ -113,6 +114,37 @@ For page-level control, pass each page's `nextCursor` back until it is `nil`. Tr
 | `.quality` | 1600px | 15K | ~25 min |
 | `.ultra` | full-res | 30K | ~45 min |
 
+### Retries, Timeouts, and Resuming
+
+Reads and `processScene` retry network failures, 429 and 5xx responses up to three times with exponential backoff and jitter, waiting out a `Retry-After` of up to 60 seconds. Creating, retraining, updating, deleting and cancelling are never retried, because the API cannot deduplicate them yet.
+
+`processScene` sends an `Idempotency-Key`, so the API replays a retried launch instead of charging twice. The generated key lasts one call. To survive an app restart, store your own key with the scene ID and pass it again:
+
+```swift
+let key = UUID().uuidString  // persist alongside the scene ID
+let scene = try await client.processScene(id: sceneID, idempotencyKey: key)
+```
+
+If `createAndProcess` fails after creating the scene, the error carries the scene's ID, so you can resume instead of paying for another job:
+
+```swift
+do {
+    let scene = try await client.createAndProcess(videoURL: videoURL)
+} catch SplatError.interrupted(let sceneID, SplatError.timeout) {
+    // This client stopped waiting; the server may still finish the job.
+    let scene = try await client.waitForScene(id: sceneID)
+}
+```
+
+`SplatError.timeout` means the client stopped waiting. `SplatError.processingFailed` means the server reported a failure. The polling timeout defaults to 165 minutes, just past the point where the API fails a job that is still running. Tune it with `SplatClient.Configuration`:
+
+```swift
+var configuration = SplatClient.Configuration()
+configuration.pollingTimeout = 4 * 60 * 60
+configuration.maxRetries = 5
+let client = SplatClient(apiKey: "s3d_your_api_key", configuration: configuration)
+```
+
 ### Error Handling
 
 API failures throw `SplatError`; network failures throw `URLError`. Every HTTP error carries a `SplatError.APIError` with the status, the API's error `code` (such as `conflict` or `insufficient_credits`), the `message`, and the `requestID` to quote to support:
@@ -129,9 +161,11 @@ do {
 } catch SplatError.serverError(let error) {
     // Any other status: branch on error.code, log error.requestID
 } catch SplatError.timeout {
-    // Processing took too long
+    // Stopped waiting for processing; the job may still finish
 } catch SplatError.processingFailed(let reason) {
     // Pipeline error
+} catch SplatError.interrupted(let sceneID, let underlying) {
+    // createAndProcess failed after creating sceneID; resume with waitForScene(id:)
 }
 ```
 
