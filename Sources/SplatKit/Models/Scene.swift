@@ -41,12 +41,15 @@ public enum SceneStatus: Codable, Sendable, CaseIterable {
     /// Alias for backwards compatibility with API responses that use "processing".
     case processing
 
+    /// A fast preview is viewable; full processing is still running.
+    case previewReady
+
     /// An unknown status value received from the server.
     case unknown(String)
 
     // CaseIterable requires all cases — unknown is not enumerable, so provide known cases only
     public static var allCases: [SceneStatus] {
-        [.uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .complete, .failed, .cancelled, .processing]
+        [.uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .complete, .failed, .cancelled, .processing, .previewReady]
     }
 
     public init(from decoder: Decoder) throws {
@@ -63,6 +66,7 @@ public enum SceneStatus: Codable, Sendable, CaseIterable {
         case "failed": self = .failed
         case "cancelled": self = .cancelled
         case "processing": self = .processing
+        case "preview_ready": self = .previewReady
         default: self = .unknown(raw)
         }
     }
@@ -80,6 +84,7 @@ public enum SceneStatus: Codable, Sendable, CaseIterable {
         case .failed: try container.encode("failed")
         case .cancelled: try container.encode("cancelled")
         case .processing: try container.encode("processing")
+        case .previewReady: try container.encode("preview_ready")
         case .unknown(let raw): try container.encode(raw)
         }
     }
@@ -100,6 +105,7 @@ extension SceneStatus: Equatable {
         case (.failed, .failed): return true
         case (.cancelled, .cancelled): return true
         case (.processing, .processing): return true
+        case (.previewReady, .previewReady): return true
         case (.unknown(let a), .unknown(let b)): return a == b
         default: return false
         }
@@ -123,6 +129,7 @@ extension SceneStatus {
         case .failed: return "failed"
         case .cancelled: return "cancelled"
         case .processing: return "processing"
+        case .previewReady: return "preview_ready"
         case .unknown(let raw): return raw
         }
     }
@@ -199,7 +206,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     /// Whether the scene is currently being processed.
     public var isProcessing: Bool {
         switch status {
-        case .uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .processing:
+        case .uploading, .extractingFrames, .runningSfm, .training, .exporting, .compressing, .processing, .previewReady:
             return true
         case .complete, .failed, .cancelled, .unknown:
             return false
@@ -255,7 +262,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
 
         // Prefer server-provided viewer URL; fall back to local construction for backwards compat
         let serverViewerURL = try container.decodeIfPresent(URL.self, forKey: .viewerURLKey)
-        viewerURL = serverViewerURL ?? (status == .complete ? URL(string: "https://splat-3d.com/s/\(id)") : nil)
+        viewerURL = serverViewerURL ?? Scene.fallbackViewerURL(id: id, status: status)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -306,7 +313,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         self.thumbnailURL = thumbnailURL
         self.thumbnailR2Key = thumbnailURL != nil ? "scenes/\(id)/thumbnail.jpg" : nil
         self.processingError = processingError
-        self.viewerURL = viewerURL ?? (status == .complete ? URL(string: "https://splat-3d.com/s/\(id)") : nil)
+        self.viewerURL = viewerURL ?? Scene.fallbackViewerURL(id: id, status: status)
         self.downloadURL = downloadURL
         self.format = format
         self.createdAt = createdAt
@@ -329,5 +336,21 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
             && lhs.format == rhs.format
             && lhs.createdAt == rhs.createdAt
             && lhs.updatedAt == rhs.updatedAt
+    }
+}
+
+// MARK: - Viewer URL
+
+extension Scene {
+    /// Public viewer route on splat-3d.com. The older `/s/{id}` route was
+    /// retired and now returns 404.
+    private static let viewerBase = "https://splat-3d.com/tour/"
+
+    /// Viewer link for responses that predate the server's `viewer_url`.
+    private static func fallbackViewerURL(id: String, status: SceneStatus) -> URL? {
+        guard status == .complete else {
+            return nil
+        }
+        return URL(string: viewerBase + id)
     }
 }
