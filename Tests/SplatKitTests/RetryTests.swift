@@ -251,7 +251,8 @@ extension SplatClientTests {
     }
 
     func testLegacyPollingArgumentsStillApply() async throws {
-        // The pre-configuration initializer: a zero timeout gives up before polling.
+        // The pre-configuration initializer: a zero timeout looks once, then gives up.
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene))
         let client = SplatClient(apiKey: "s3d_test_key_12345", session: mockSession(), pollingInterval: 5, pollingTimeout: 0)
 
         let error = await expectSplatError { try await client.waitForScene(id: Fixture.sceneID) }
@@ -259,7 +260,7 @@ extension SplatClientTests {
         guard case .timeout = error else {
             return XCTFail("Expected .timeout, got \(String(describing: error))")
         }
-        XCTAssertTrue(MockURLProtocol.capturedRequests.isEmpty)
+        XCTAssertEqual(MockURLProtocol.capturedRequests.count, 1)
     }
 
     // MARK: - Timeout vs failure
@@ -275,8 +276,9 @@ extension SplatClientTests {
         guard case .timeout = error else {
             return XCTFail("Expected .timeout, got \(String(describing: error))")
         }
+        // Polls at 0, 10 and 20 s: the last one, at the deadline, looks once more.
         XCTAssertEqual(clock.sleeps, [10, 10])
-        XCTAssertEqual(MockURLProtocol.requests(to: Fixture.scenePath).count, 2)
+        XCTAssertEqual(MockURLProtocol.requests(to: Fixture.scenePath).count, 3)
     }
 
     func testServerFailureIsNotATimeout() async throws {
@@ -332,6 +334,8 @@ extension SplatClientTests {
     func testProcessFailureKeepsSceneID() async throws {
         stubCreateAndUpload()
         MockURLProtocol.stub("\(Fixture.scenePath)/process", .json(402, Fixture.insufficientCredits))
+        // Refused before anything was claimed: the scene is still uploading.
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
@@ -358,20 +362,5 @@ extension SplatClientTests {
         guard case .timeout = interruption.underlying as? SplatError else {
             return XCTFail("Expected .timeout, got \(interruption.underlying)")
         }
-    }
-
-    func testProcessingFailureKeepsSceneID() async throws {
-        stubCreateAndUpload()
-        MockURLProtocol.stub("\(Fixture.scenePath)/process", .json(200, Fixture.processAccepted))
-        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.sweptScene))
-
-        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
-
-        let interruption = try XCTUnwrap(interruption(error))
-        XCTAssertEqual(interruption.phase, .wait)
-        guard case .processingFailed(let message) = interruption.underlying as? SplatError else {
-            return XCTFail("Expected .processingFailed, got \(interruption.underlying)")
-        }
-        XCTAssertEqual(message, "Processing timed out — the GPU job did not complete.")
     }
 }

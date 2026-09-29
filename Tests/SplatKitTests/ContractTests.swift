@@ -71,6 +71,11 @@ final class ContractTests: XCTestCase {
             "undeclared data.psnr_holdout",
             "undeclared data.ssim_holdout",
         ]),
+        FixtureCase("failedLaunchScene", Fixture.failedLaunchScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
         FixtureCase("sweptScene", Fixture.sweptScene, "getScene", 200, deviations: [
             "missing data.training_model",
             "undeclared data.psnr_holdout",
@@ -93,6 +98,8 @@ final class ContractTests: XCTestCase {
         FixtureCase("insufficientCredits", Fixture.insufficientCredits, "processScene", 402),
         FixtureCase("launchUnconfirmed", Fixture.launchUnconfirmed, "processScene", 503),
         FixtureCase("processQuotaExceeded", Fixture.processQuotaExceeded, "processScene", 429),
+        FixtureCase("launchRejected", Fixture.launchRejected, "processScene", 502),
+        FixtureCase("keyLookupFailed", Fixture.keyLookupFailed, "getScene", 401),
         FixtureCase("retrainConflict", Fixture.retrainConflict, "retrainScene", 409),
         FixtureCase("cancelConflict", Fixture.cancelConflict, "cancelScene", 409),
         FixtureCase("noModel", Fixture.noModel, "downloadScene", 404),
@@ -123,6 +130,7 @@ final class ContractTests: XCTestCase {
         "processScene 402",  // insufficient credits (processScene)
         "processScene 503",  // launch not confirmed; "Retry the same request" (processScene)
         "processScene 429",  // monthly processing quota used up (processScene)
+        "processScene 502",  // a launch the API failed and refunded (failLaunch)
         "getScene 500",      // any unhandled error (errorHandler)
         "listScenes 400",    // `limit` outside 1–100 (route validation)
     ]

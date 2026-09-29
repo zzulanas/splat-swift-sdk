@@ -169,6 +169,13 @@ enum Fixture {
     }
     """
 
+    /// GET /v1/scenes/{id} → 200 after fail_scene_launch: status failed and
+    /// processing_error set to the stored launch error's message.
+    static let failedLaunchScene = sweptScene.replacingOccurrences(
+        of: "Processing timed out — the GPU job did not complete.",
+        with: "Modal rejected the launch (401)."
+    )
+
     /// GET /v1/scenes?limit=2 → 200, first of two pages. Item keys: the column
     /// list listScenes selects; meta: the list route in api/src/routes/scenes.ts
     /// (next_cursor is the last item's created_at). Spec: SceneListResponse.
@@ -425,6 +432,16 @@ enum Fixture {
     /// 429 from processScene when the monthly processing quota is used up
     /// (the claim's quota_exceeded outcome in api/src/lib/scenes.ts).
     static let processQuotaExceeded = error("quota_exceeded", "Monthly scene processing limit reached.")
+
+    /// 502 from a launch the API claimed and then failed for good: Modal
+    /// rejected it, so failLaunch refunded it, failed the scene and stored
+    /// this error, which every repeat replays (api/src/lib/scenes.ts;
+    /// fail_scene_launch in supabase/migrations/20260928120000_atomic_scene_launches.sql).
+    static let launchRejected = error("upstream_error", "Modal rejected the launch (401).")
+
+    /// 401 when the API-key lookup itself fails, e.g. a database blip:
+    /// requireApiKeyAuth answers any lookup error this way (api/src/middleware/auth.ts).
+    static let keyLookupFailed = error("unauthorized", "Invalid or expired API key.")
 
     /// 402 from processScene's credit reservation (api/src/lib/scenes.ts).
     static let insufficientCredits = error(

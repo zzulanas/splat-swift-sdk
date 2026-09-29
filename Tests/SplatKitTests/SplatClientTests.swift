@@ -13,11 +13,16 @@ final class MockURLProtocol: URLProtocol {
         let headers: [String: String]
         /// Fail the request with this transport error instead of responding.
         var failure: URLError? = nil
+        /// Never answer; the request stays in flight until it is cancelled.
+        var hangs = false
 
         /// A request that never gets a response, e.g. a dropped connection.
         static func failure(_ code: URLError.Code) -> Stub {
             Stub(statusCode: 0, body: Data(), headers: [:], failure: URLError(code))
         }
+
+        /// A request the server never answers, so a test can cancel it mid-flight.
+        static let hang = Stub(statusCode: 0, body: Data(), headers: [:], hangs: true)
 
         /// A JSON response, optionally with extra headers such as `X-Request-Id`.
         static func json(_ statusCode: Int, _ body: String, headers: [String: String] = [:]) -> Stub {
@@ -111,6 +116,9 @@ final class MockURLProtocol: URLProtocol {
         let path = request.url?.path ?? ""
 
         if let stub = Self.nextStub(for: path) {
+            if stub.hangs {
+                return
+            }
             if let failure = stub.failure {
                 client?.urlProtocol(self, didFailWithError: failure)
                 return
@@ -164,6 +172,16 @@ final class FakeClock: @unchecked Sendable {
     private var slept: [TimeInterval] = []
     private var cancelNextSleep = false
 
+    private var extraOnNextSleep: TimeInterval = 0
+
+    /// Move time `extra` further during the next sleep, as when a device
+    /// sleeps through a deadline.
+    func advanceOnNextSleep(by extra: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        extraOnNextSleep = extra
+    }
+
     /// Cancel whichever task sleeps next, as if the user left mid-wait.
     func cancelOnNextSleep() {
         lock.lock()
@@ -206,7 +224,23 @@ final class FakeClock: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         slept.append(seconds)
-        current += seconds
+        current += seconds + extraOnNextSleep
+        extraOnNextSleep = 0
+    }
+}
+
+// MARK: - Recorder
+
+/// Collects values from main-actor callbacks such as `onProgress`.
+@MainActor
+final class Recorder<Value> {
+
+    private(set) var values: [Value] = []
+
+    nonisolated init() {}
+
+    func record(_ value: Value) {
+        values.append(value)
     }
 }
 

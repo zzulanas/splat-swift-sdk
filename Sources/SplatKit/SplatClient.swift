@@ -80,7 +80,7 @@ struct ProcessSceneData: Decodable {
 ///
 /// The API infers `sfm.backend = "none"` from the presence of `arkit_poses`,
 /// so the SDK does not send `sfm` explicitly.
-struct ProcessSceneBody: Encodable {
+struct ProcessSceneBody: Encodable, Sendable {
     let enableLod: Bool?
     let arkitPoses: [ARKitPose]?
     let lidarPoints: [[Float]]?
@@ -306,7 +306,10 @@ public final class SplatClient: Sendable {
     ///
     /// A launch with different inputs, or a different key, for a scene that
     /// is already launched fails with `conflict` (409), which is never
-    /// retried: resume with ``waitForScene(id:onProgress:)`` instead.
+    /// retried: resume with ``waitForScene(id:onProgress:)`` instead. A launch
+    /// the API failed for good (e.g. `upstream_error`, when the pipeline
+    /// rejected it) was refunded and failed the scene; repeats replay that
+    /// error, so start over with a new scene.
     ///
     /// The route accepts 5–1,000 poses and up to 50,000 LiDAR points. Longer
     /// captures are thinned evenly to fit; fewer than 5 poses are not sent,
@@ -332,10 +335,14 @@ public final class SplatClient: Sendable {
         idempotencyKey: String? = nil
     ) async throws -> SceneLaunch {
         let body = ProcessSceneBody(enableLOD: enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
-        let key = idempotencyKey ?? Self.launchKey(for: id)
+        return try await launch(id: id, body: body, idempotencyKey: idempotencyKey ?? Self.launchKey(for: id))
+    }
 
-        // Nothing else is read after the launch: once the API accepts it, it
-        // is charged, and a failed follow-up read must not look like a failure.
+    /// Send a launch body with its key and return the API's acknowledgement.
+    ///
+    /// Nothing else is read after the launch: once the API accepts it, it is
+    /// charged, and a failed follow-up read must not look like a failure.
+    private func launch(id: String, body: ProcessSceneBody, idempotencyKey key: String) async throws -> SceneLaunch {
         let launch = try await api.request(
             ProcessSceneData.self,
             path: APIPath.scene(id, .process),
@@ -585,17 +592,19 @@ public final class SplatClient: Sendable {
 
     /// Poll a scene until processing finishes.
     ///
-    /// Use it to resume a launched scene after ``SplatError/interrupted(_:)``
-    /// or an app restart, without paying for another job. Network failures,
-    /// 5xx and rate limits don't end the wait: they say nothing about the job,
-    /// so polling carries on until the deadline.
+    /// Use it to pick up a launched scene, e.g. after an app restart, without
+    /// paying for another job. Network failures, 5xx and rate limits don't
+    /// end the wait, since they say nothing about the job; once the scene has
+    /// been read, neither does a short run of 401 or 404, which the API also
+    /// returns when its database blips. After the deadline it looks once more.
     ///
     /// - Parameters:
     ///   - id: The scene ID.
-    ///   - onProgress: Optional callback with each polled status and progress.
+    ///   - onProgress: Optional callback, on the main actor, with each polled
+    ///     status and progress.
     /// - Returns: The completed scene.
-    /// - Throws: ``SplatError/notStarted`` at once if the scene is still
-    ///           `uploading`: no job exists to wait for.
+    /// - Throws: ``SplatError/notStarted`` if the scene is still `uploading`
+    ///           on two polls in a row: no job exists to wait for.
     ///           ``SplatError/timeout`` if ``Configuration/pollingTimeout``
     ///           passes first; the job may still finish, so call again to keep waiting.
     ///           ``SplatError/processingFailed(_:)`` if the server reports failure.
@@ -604,9 +613,9 @@ public final class SplatClient: Sendable {
     ///           `CancellationError` if the task is cancelled.
     public func waitForScene(
         id: String,
-        onProgress: ((SceneStatus, Double?) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
     ) async throws -> Scene {
-        try await poller.poll(sceneId: id, using: api, onProgress: onProgress)
+        try await poller.poll(sceneId: id, using: api, evidence: .none, onProgress: onProgress)
     }
 
     // MARK: - Create and Process (Convenience)
@@ -630,10 +639,17 @@ public final class SplatClient: Sendable {
     /// }
     /// ```
     ///
-    /// Once the scene exists, any failure, including cancellation, is thrown
-    /// as ``SplatError/interrupted(_:)``. Its ``SplatError/Interruption`` says
-    /// which step failed, what was charged, and how to resume without paying
-    /// for another job.
+    /// Once the scene exists, a failure that leaves the outcome open (network,
+    /// timeout, cancellation) is thrown as ``SplatError/interrupted(_:)``:
+    /// continue with ``resume(_:onProgress:)``, which doesn't pay again. An
+    /// outcome the server settled is thrown as itself: ``SplatError/processingFailed(_:)``,
+    /// ``SplatError/cancelled``, or the error of a launch the API failed for good.
+    ///
+    /// If the app may be killed while it waits, save the ID `onSceneCreated`
+    /// passes. On relaunch, call ``waitForScene(id:onProgress:)``; if it throws
+    /// ``SplatError/notStarted``, nothing was launched, so launch it with
+    /// ``processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``
+    /// (a 400 there means the upload never landed: start over).
     ///
     /// - Parameters:
     ///   - videoURL: Local file URL of the video to upload.
@@ -641,55 +657,188 @@ public final class SplatClient: Sendable {
     ///   - preset: Processing quality preset. Defaults to `.standard`.
     ///   - arkitPoses: Optional ARKit camera poses to skip SfM.
     ///   - lidarPoints: Optional LiDAR points from ``SplatScanner``.
-    ///   - onProgress: Optional callback for status updates during polling.
+    ///   - onProgress: Optional callback, on the main actor, for status updates.
+    ///   - onSceneCreated: Optional callback, on the main actor, with the new
+    ///     scene's ID as soon as it exists, before the upload.
     /// - Returns: The completed scene.
-    /// - Throws: The creation error if the scene could not be created.
-    ///           Afterwards, ``SplatError/interrupted(_:)`` wrapping the cause:
-    ///           e.g. ``SplatError/timeout`` when polling outlasts
-    ///           ``Configuration/pollingTimeout``, ``SplatError/processingFailed(_:)``
-    ///           if the pipeline fails, or `CancellationError`.
+    /// - Throws: The creation error if the scene could not be created, or
+    ///           `CancellationError` if the task was cancelled before it was.
+    ///           Afterwards, ``SplatError/interrupted(_:)`` or a settled outcome.
     public func createAndProcess(
         videoURL: URL,
         title: String? = nil,
         preset: SceneParams = .standard,
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
-        onProgress: ((SceneStatus, Double?) -> Void)? = nil
+        onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil,
+        onSceneCreated: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> Scene {
         // 1. Create scene
         let (sceneID, uploadURL) = try await createScene(title: title, preset: preset)
-        let key = Self.launchKey(for: sceneID)
-        var phase = SplatError.Interruption.Phase.upload
+        await onSceneCreated?(sceneID)
+
+        // 2–4. Upload, launch and wait, recording what resume would repeat.
+        let run = Run(
+            sceneID: sceneID,
+            idempotencyKey: Self.launchKey(for: sceneID),
+            request: ResumableRequest(
+                videoURL: videoURL,
+                uploadURL: uploadURL,
+                launch: ProcessSceneBody(enableLOD: preset.enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
+            )
+        )
+        return try await proceed(run, from: .upload, onProgress: onProgress)
+    }
+
+    // MARK: - Resume
+
+    /// Continue a `createAndProcess` that stopped before its outcome was
+    /// known, without paying for another job.
+    ///
+    /// It reads the scene first and does only what is missing:
+    /// - complete: returns it.
+    /// - failed or cancelled: throws ``SplatError/processingFailed(_:)`` or
+    ///   ``SplatError/cancelled``. The outcome is settled and anything charged
+    ///   was refunded, so start over with a new scene.
+    /// - still uploading: uploads the same file again if the upload had
+    ///   failed, then launches with exactly the request `createAndProcess`
+    ///   sent (same body, same key), so a launch already on its way is
+    ///   replayed rather than charged twice; then waits.
+    /// - anything else: waits.
+    ///
+    /// ```swift
+    /// do {
+    ///     scene = try await client.createAndProcess(videoURL: video, arkitPoses: poses)
+    /// } catch SplatError.interrupted(let interruption) {
+    ///     scene = try await client.resume(interruption)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - interruption: What `createAndProcess` threw.
+    ///   - onProgress: Optional callback, on the main actor, for status updates.
+    /// - Returns: The completed scene.
+    /// - Throws: ``SplatError/interrupted(_:)`` again if it stops again (resume
+    ///           that one), or a settled outcome as above.
+    public func resume(
+        _ interruption: SplatError.Interruption,
+        onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
+    ) async throws -> Scene {
+        let run = Run(sceneID: interruption.sceneID, idempotencyKey: interruption.idempotencyKey, request: interruption.request)
+
+        let scene: Scene
+        do {
+            scene = try await getScene(id: run.sceneID)
+        } catch {
+            throw SplatError.interrupted(interruption.replacing(underlying: Self.cause(of: error)))
+        }
+
+        switch scene.status {
+        case .complete:
+            return scene
+        case .failed:
+            throw SplatError.processingFailed(scene.failureMessage)
+        case .cancelled:
+            throw SplatError.cancelled
+        case .uploading where interruption.phase != .wait:
+            // Nothing was launched. Upload again only if the upload failed.
+            guard run.request != nil else {
+                throw SplatError.notStarted
+            }
+            return try await proceed(run, from: interruption.phase == .upload ? .upload : .launch, onProgress: onProgress)
+        default:
+            return try await proceed(run, from: .wait, onProgress: onProgress)
+        }
+    }
+
+    // MARK: - Upload, Launch, Wait (internal)
+
+    /// One `createAndProcess`, as far as continuing it needs.
+    private struct Run {
+        let sceneID: String
+        let idempotencyKey: String
+        let request: ResumableRequest?
+    }
+
+    /// An outcome the server settled, e.g. a launch it failed and refunded.
+    /// Thrown as the wrapped error, never as `.interrupted`: nothing is left
+    /// to resume.
+    private struct Settled: Error {
+        let error: Error
+    }
+
+    /// Upload, launch and wait from `start` on. A failure that leaves the
+    /// outcome open is thrown as `.interrupted`; a settled one as itself.
+    private func proceed(
+        _ run: Run,
+        from start: SplatError.Interruption.Phase,
+        onProgress: ProgressHandler?
+    ) async throws -> Scene {
+        var phase = start
 
         do {
-            // 2. Upload video
-            onProgress?(.uploading, 0)
-            try await uploadVideo(from: videoURL, to: uploadURL)
-            onProgress?(.uploading, 100)
+            if phase == .upload, let request = run.request {
+                await onProgress?(.uploading, 0)
+                try await uploadVideo(from: request.videoURL, to: request.uploadURL)
+                await onProgress?(.uploading, 100)
+                phase = .launch
+            }
 
-            // 3. Trigger processing
-            phase = .launch
-            _ = try await processScene(
-                id: sceneID,
-                arkitPoses: arkitPoses,
-                lidarPoints: lidarPoints,
-                enableLOD: preset.enableLOD,
-                idempotencyKey: key
-            )
+            if phase == .launch, let request = run.request {
+                try await settleOrLaunch(run, body: request.launch)
+                phase = .wait
+            }
 
-            // 4. Poll until complete or failed
-            phase = .wait
-            return try await waitForScene(id: sceneID, onProgress: onProgress)
+            return try await poller.poll(sceneId: run.sceneID, using: api, evidence: .exists, onProgress: onProgress)
+        } catch let settled as Settled {
+            throw settled.error
+        } catch let error as SplatError where error.isSettledOutcome {
+            throw error
         } catch {
-            // The scene exists, and once launched it is paid for: say where it
-            // stopped so the caller resumes instead of starting over.
-            let cause = Task.isCancelled ? CancellationError() : error
             throw SplatError.interrupted(SplatError.Interruption(
-                sceneID: sceneID,
+                sceneID: run.sceneID,
                 phase: phase,
-                idempotencyKey: key,
-                underlying: cause
+                idempotencyKey: run.idempotencyKey,
+                underlying: Self.cause(of: error),
+                request: run.request
             ))
+        }
+    }
+
+    /// Launch with the recorded body and key. If that fails, the scene says
+    /// whether the API settled it: failed or cancelled means the launch is
+    /// over (and refunded), so it is not worth resuming.
+    private func settleOrLaunch(_ run: Run, body: ProcessSceneBody) async throws {
+        do {
+            _ = try await launch(id: run.sceneID, body: body, idempotencyKey: run.idempotencyKey)
+        } catch {
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            if let scene = try? await getScene(id: run.sceneID), scene.status == .failed || scene.status == .cancelled {
+                throw Settled(error: error)
+            }
+            throw error
+        }
+    }
+
+    /// The error to report: cancellation as Swift reports it, whatever form it took.
+    private static func cause(of error: Error) -> Error {
+        Task.isCancelled ? CancellationError() : error
+    }
+}
+
+// MARK: - Settled Outcomes
+
+extension SplatError {
+
+    /// Whether the server settled the scene: there is nothing to resume.
+    var isSettledOutcome: Bool {
+        switch self {
+        case .processingFailed, .cancelled:
+            return true
+        default:
+            return false
         }
     }
 }

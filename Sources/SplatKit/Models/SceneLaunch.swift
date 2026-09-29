@@ -21,4 +21,12 @@ public struct SceneLaunch: Sendable, Equatable {
     /// The `Idempotency-Key` the launch was sent with. Sending it again with
     /// the same inputs replays this launch instead of charging again.
     public let idempotencyKey: String
+
+    /// Create a launch, e.g. for a test double.
+    public init(sceneID: String, status: SceneStatus, message: String, idempotencyKey: String) {
+        self.sceneID = sceneID
+        self.status = status
+        self.message = message
+        self.idempotencyKey = idempotencyKey
+    }
 }

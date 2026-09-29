@@ -21,6 +21,16 @@ struct Timing: Sendable {
     )
 }
 
+// MARK: - RetryPolicy
+
+/// Whether a failed request may be repeated automatically.
+enum RetryPolicy {
+    /// Repeat transient failures when the request is safe to repeat.
+    case automatic
+    /// Never: the caller does its own waiting, as polling does.
+    case never
+}
+
 // MARK: - Retries
 //
 //   attempt ──ok──> result
@@ -46,6 +56,10 @@ extension APIClient {
     /// the next period (quota.ts and processScene in the API).
     static let quotaExceededCode = "quota_exceeded"
 
+    /// Code of a launch the API claimed and then failed for good (failLaunch
+    /// in processScene): it refunded it, and every repeat replays the error.
+    static let launchFailedCode = "upstream_error"
+
     /// Transport failures where the network, not the request, failed.
     static let transientURLErrors: Set<URLError.Code> = [
         .timedOut,
@@ -57,8 +71,12 @@ extension APIClient {
     ]
 
     /// Run `attempt`, repeating transient failures if `request` is safe to repeat.
-    func withRetries<T>(for request: URLRequest, _ attempt: () async throws -> T) async throws -> T {
-        let limit = Self.isRepeatable(request) ? maxRetries : 0
+    func withRetries<T>(
+        for request: URLRequest,
+        policy: RetryPolicy = .automatic,
+        _ attempt: () async throws -> T
+    ) async throws -> T {
+        let limit = policy == .automatic && Self.isRepeatable(request) ? maxRetries : 0
         var retries = 0
 
         while true {
@@ -88,7 +106,8 @@ extension APIClient {
     }
 
     /// Whether another attempt may succeed: the network failed, the server
-    /// erred (5xx), or a rate limit (429) other than a used-up quota.
+    /// erred (5xx) other than a launch it failed for good, or a rate limit
+    /// (429) other than a used-up quota.
     ///
     /// Any other 4xx means the request itself is wrong, e.g. a 409 for an
     /// idempotency key reused with a different body.
@@ -102,6 +121,9 @@ extension APIClient {
         }
         if apiError.statusCode == HTTPStatus.tooManyRequests {
             return apiError.code != quotaExceededCode
+        }
+        if apiError.code == launchFailedCode {
+            return false
         }
         return HTTPStatus.serverError.contains(apiError.statusCode)
     }

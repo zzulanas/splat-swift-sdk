@@ -63,9 +63,10 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// call went through. There is no job to wait for.
     case notStarted
 
-    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)``
-    /// failed after creating its scene. The ``Interruption`` says which step
-    /// failed, what was charged, and how to resume.
+    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:onSceneCreated:)``
+    /// stopped after creating its scene, before the outcome was known.
+    /// Continue with ``SplatClient/resume(_:onProgress:)``; the
+    /// ``Interruption`` says which step stopped and what was charged.
     case interrupted(Interruption)
 
     public var errorDescription: String? {
@@ -458,6 +459,27 @@ enum APIPath {
     )
 }
 
+// MARK: - Timestamps
+
+/// Parses API timestamps, with or without fractional seconds.
+///
+/// `ISO8601DateFormatter` is thread-safe but not marked `Sendable`; the
+/// decoder's date strategy runs as a `@Sendable` closure.
+final class TimestampParser: @unchecked Sendable {
+
+    private let fractional = ISO8601DateFormatter()
+    private let whole = ISO8601DateFormatter()
+
+    init() {
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        whole.formatOptions = [.withInternetDateTime]
+    }
+
+    func date(from string: String) -> Date? {
+        fractional.date(from: string) ?? whole.date(from: string)
+    }
+}
+
 // MARK: - APIClient
 
 /// Internal HTTP client for the Splat REST API.
@@ -495,17 +517,11 @@ final class APIClient: Sendable {
         // Using both would cause a double-conversion mismatch.
 
         // ISO 8601 with fractional seconds support
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        let timestamps = TimestampParser()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let string = try container.decode(String.self)
-            if let date = formatter.date(from: string) {
-                return date
-            }
-            if let date = fallbackFormatter.date(from: string) {
+            if let date = timestamps.date(from: string) {
                 return date
             }
             throw DecodingError.dataCorruptedError(
@@ -518,6 +534,9 @@ final class APIClient: Sendable {
 
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
+        // Same input, same bytes: a repeated launch body is identical, which
+        // makes replays easy to check (the API also canonicalizes it).
+        encoder.outputFormatting = .sortedKeys
         encoder.dateEncodingStrategy = .iso8601
         self.encoder = encoder
     }
@@ -579,10 +598,11 @@ final class APIClient: Sendable {
         path: String,
         method: HTTPMethod,
         body: (any Encodable)? = nil,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        retry policy: RetryPolicy = .automatic
     ) async throws -> T {
         let urlRequest = try buildRequest(path: path, method: method, body: body, idempotencyKey: idempotencyKey)
-        let (data, _) = try await send(urlRequest)
+        let (data, _) = try await send(urlRequest, retry: policy)
         return try decode(APIResponse<T>.self, from: data).data
     }
 
@@ -634,8 +654,8 @@ final class APIClient: Sendable {
     ///
     /// - Throws: ``SplatError`` for any other status; `URLError` when the
     ///   request never got a response.
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        try await withRetries(for: request) {
+    func send(_ request: URLRequest, retry policy: RetryPolicy = .automatic) async throws -> (Data, HTTPURLResponse) {
+        try await withRetries(for: request, policy: policy) {
             let (data, response) = try await session.data(for: request)
             let httpResponse = try httpResponse(response)
 
