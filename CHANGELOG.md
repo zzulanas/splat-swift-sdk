@@ -54,11 +54,18 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   outcome open (network errors, a timeout, cancellation, a launch refused for
   want of credits) is thrown as `SplatError.interrupted(Interruption)`.
   Continue it with `resume(_:)`. Errors no resume can get past are thrown as
-  themselves: `.processingFailed` (the scene failed, including a launch the
-  API failed), `.cancelled`, `.notFound` (the scene was deleted), and
-  `.requestFailed` when storage refuses the upload URL or the API refuses the
-  launch request itself (400). **Around `createAndProcess`, these catches
-  still compile but no longer see the errors `.interrupted` carries:**
+  themselves:
+  - `.processingFailed`: the server failed the scene, including a launch it
+    failed. Rarely a job the stale-job sweep failed still completes, so check
+    `getScene` before starting over.
+  - `.cancelled`.
+  - `.notFound`: the scene was deleted, as a replay of its launch confirms.
+  - `.uploadFailed` for a capture that is missing or empty.
+  - `.requestFailed` when storage refuses the upload URL, or the API refuses
+    the launch request itself (400).
+
+  **Around `createAndProcess`, these catches still compile but no longer see
+  the errors `.interrupted` carries:**
   - `catch is CancellationError`: a cancelled task arrives as `.interrupted`
     with `underlying` `CancellationError`. SwiftUI `.task` code that ignores
     cancellation should match
@@ -123,7 +130,8 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   only if the API answers that the upload never arrived.
 - `resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)` continues a
   scene after an app restart, from its saved ID and the same preset and
-  capture, rebuilding the same request.
+  capture, rebuilding the same request. Every argument that shapes the launch
+  is required, `nil` included, so leaving one out can't launch another job.
 - `onSceneCreated` on `createAndProcess`: the scene ID as soon as the scene
   exists, before anything is charged, so an app killed mid-wait can resume it.
 - `waitForScene(id:onProgress:)` to pick up a launched scene. It keeps polling
@@ -200,6 +208,12 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 
 ### Fixed
 
+- `uploadVideo` and `createAndProcess` sent a missing or empty file as an
+  empty upload, which storage accepted, so the launch was charged for an
+  empty video. They now throw `.uploadFailed` with a `URLError`
+  (`.fileDoesNotExist`, `.noPermissionsToReadFile`, `.fileIsDirectory` or
+  `.zeroByteResource`) before sending anything, and `createAndProcess` before
+  it creates the scene.
 - Viewer URLs pointed at the retired `splat-3d.com/s/{id}` route, which returns
   404; they now use `/tour/{id}`.
 - `preview_ready` decodes as an in-progress status instead of failing.

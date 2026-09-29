@@ -284,7 +284,11 @@ public final class SplatClient: Sendable {
     /// - Parameters:
     ///   - fileURL: Local file URL of the video to upload.
     ///   - uploadURL: Presigned upload URL from ``createScene(title:preset:)``.
-    /// - Throws: ``SplatError/uploadFailed(_:)`` on upload failure.
+    /// - Throws: ``SplatError/uploadFailed(_:)`` on upload failure, and before
+    ///   sending anything when the file is missing, unreadable, a folder or
+    ///   empty: URLSession would send those as an empty body, which storage
+    ///   accepts. Its `URLError` is `.fileDoesNotExist`,
+    ///   `.noPermissionsToReadFile`, `.fileIsDirectory` or `.zeroByteResource`.
     public func uploadVideo(from fileURL: URL, to uploadURL: URL) async throws {
         try await api.uploadFile(from: fileURL, to: uploadURL, contentType: "video/mp4")
     }
@@ -640,21 +644,28 @@ public final class SplatClient: Sendable {
     /// Once the scene exists, a failure that leaves the outcome open (network,
     /// timeout, cancellation, a launch refused for want of credits) is thrown
     /// as ``SplatError/interrupted(_:)``: continue with ``resume(_:onProgress:)``,
-    /// which doesn't pay again. Anything else is final, because no resume can
-    /// get past it, so start over with a new scene:
-    /// - ``SplatError/processingFailed(_:)``: the scene failed, including a
-    ///   launch the API failed. The server refunds a failed scene.
+    /// which doesn't pay again. Anything else ends the run, and no resume
+    /// can continue it:
+    /// - ``SplatError/processingFailed(_:)``: the server failed the scene,
+    ///   including a launch it failed, and refunds it. Rarely, a job the
+    ///   stale-job sweep failed still completes, so check ``getScene(id:)``
+    ///   before starting over.
     /// - ``SplatError/cancelled``: the scene was cancelled. The server doesn't
     ///   refund a job that had started.
-    /// - ``SplatError/notFound(_:)``: the scene was deleted.
+    /// - ``SplatError/notFound(_:)``: the scene was deleted. A 404 while
+    ///   waiting counts only once a replay of the launch also finds no scene,
+    ///   since the API answers a failed read with 404 too.
+    /// - ``SplatError/uploadFailed(_:)`` with a `URLError` such as
+    ///   `.fileDoesNotExist` or `.zeroByteResource`: the capture is missing
+    ///   or empty, so nothing was sent. It is checked before the scene is
+    ///   created too, so a bad path costs no scene creation.
     /// - ``SplatError/requestFailed(_:)`` with a 4xx: storage refused the
     ///   upload URL (403 once it expires, after an hour), or the API refused
     ///   the launch request itself (400).
     ///
     /// If the app may be killed while it works, save the ID `onSceneCreated`
-    /// passes. On relaunch, continue with
-    /// ``resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)``, passing
-    /// the same preset and capture.
+    /// passes, and the preset and capture. On relaunch, continue with
+    /// ``resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)``.
     ///
     /// - Parameters:
     ///   - videoURL: Local file URL of the video to upload.
@@ -680,6 +691,9 @@ public final class SplatClient: Sendable {
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil,
         onSceneCreated: (@MainActor @Sendable (String) -> Void)? = nil
     ) async throws -> SplatScene {
+        // A capture that can't be sent would spend a scene creation for nothing.
+        try APIClient.checkUploadable(videoURL)
+
         // 1. Create scene
         let (sceneID, uploadURL) = try await createScene(title: title, preset: preset)
         await onSceneCreated?(sceneID)
@@ -751,9 +765,13 @@ public final class SplatClient: Sendable {
     /// (same body, same key), launches, and waits. The API replays a launch
     /// that went through instead of charging it again.
     ///
+    /// Every argument that shapes the launch is required, `nil` included: a
+    /// launch rebuilt without the poses, LiDAR or LOD would be a different
+    /// paid job. Save them with the ID; `ARKitPose` is `Codable`.
+    ///
     /// ```swift
-    /// // After a relaunch:
-    /// scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points)
+    /// // After a relaunch, with the saved capture:
+    /// scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: saved.poses, lidarPoints: saved.points)
     /// ```
     ///
     /// The upload URL isn't kept, so this can't upload. If the app was killed
@@ -763,16 +781,16 @@ public final class SplatClient: Sendable {
     /// - Parameters:
     ///   - sceneID: The ID `onSceneCreated` passed.
     ///   - preset: The preset `createAndProcess` was given.
-    ///   - arkitPoses: The ARKit poses it was given.
-    ///   - lidarPoints: The LiDAR points it was given.
+    ///   - arkitPoses: The ARKit poses it was given, or `nil` if none.
+    ///   - lidarPoints: The LiDAR points it was given, or `nil` if none.
     ///   - onProgress: Optional callback, on the main actor, for status updates.
     /// - Returns: The completed scene.
     /// - Throws: As ``resume(_:onProgress:)``.
     public func resume(
         sceneID: String,
-        preset: SceneParams = .standard,
-        arkitPoses: [ARKitPose]? = nil,
-        lidarPoints: [[Float]]? = nil,
+        preset: SceneParams,
+        arkitPoses: [ARKitPose]?,
+        lidarPoints: [[Float]]?,
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
     ) async throws -> SplatScene {
         let run = Run(
@@ -827,14 +845,44 @@ public final class SplatClient: Sendable {
             throw final.error
         } catch let error as SplatError where error.isFinal {
             throw error
+        } catch SplatError.notFound(let refusal) {
+            // The API answers a failed scene read with 404 too, so a read's
+            // 404 ends the run only once a launch replay confirms it.
+            guard await isGone(run) else {
+                throw stopped(run, at: phase, by: SplatError.notFound(refusal))
+            }
+            throw SplatError.notFound(refusal)
         } catch {
-            throw SplatError.interrupted(SplatError.Interruption(
-                sceneID: run.sceneID,
-                phase: phase,
-                idempotencyKey: run.idempotencyKey,
-                underlying: Self.cause(of: error),
-                request: run.request
-            ))
+            throw stopped(run, at: phase, by: error)
+        }
+    }
+
+    /// `.interrupted` for a run that stopped at `phase`, with what `resume`
+    /// needs to continue it.
+    private func stopped(_ run: Run, at phase: SplatError.Interruption.Phase, by error: Error) -> SplatError {
+        .interrupted(SplatError.Interruption(
+            sceneID: run.sceneID,
+            phase: phase,
+            idempotencyKey: run.idempotencyKey,
+            underlying: Self.cause(of: error),
+            request: run.request
+        ))
+    }
+
+    /// Whether the scene is gone, asked by replaying its launch. The replay is
+    /// free: the API replays a launch that went through, and a scene past
+    /// `uploading` can't be claimed again. processScene answers 404 only for
+    /// a scene that doesn't exist (a failed lookup there is a 503). Without
+    /// the launch body there is nothing to replay, so nothing is confirmed.
+    private func isGone(_ run: Run) async -> Bool {
+        guard let body = run.request?.launch else {
+            return false
+        }
+        do {
+            _ = try await launch(id: run.sceneID, body: body, idempotencyKey: run.idempotencyKey)
+            return false
+        } catch {
+            return (error as? SplatError)?.apiError?.statusCode == HTTPStatus.notFound
         }
     }
 
@@ -876,9 +924,9 @@ public final class SplatClient: Sendable {
         await onProgress?(.uploading, 0)
         do {
             try await uploadVideo(from: upload.videoURL, to: upload.uploadURL)
-        } catch let error as SplatError where error.isStorageRefusal {
-            // The URL itself was refused, e.g. once it expired after an hour:
-            // no resume can upload to this scene.
+        } catch let error as SplatError where error.isStorageRefusal || error.isUnsendableFile {
+            // Storage refused the URL itself (e.g. it expired after an hour),
+            // or the capture is gone or empty: no resume can upload it.
             throw Final(error: error)
         }
         await onProgress?(.uploading, 100)
@@ -937,14 +985,27 @@ extension SplatError {
     /// (404; processScene answers a failed lookup with 503).
     private static let finalLaunchStatuses: Set<Int> = [HTTPStatus.badRequest, HTTPStatus.notFound]
 
-    /// Start of processScene's answer when the source isn't in storage
-    /// (api/src/lib/scenes.ts). It carries no code of its own.
+    /// Code of processScene's answer when the source isn't in storage, since
+    /// gaussian-splatting #323.
+    private static let missingSourceCode = "source_missing"
+
+    /// Start of that answer's message, for servers without the code, which
+    /// send it as `invalid_input` like other 400s (api/src/lib/scenes.ts).
     private static let missingSourceMessage = "Source file not found"
+
+    /// Why an upload failed before sending: the file is missing, unreadable,
+    /// a folder, or empty (see `APIClient.checkUploadable(_:)`).
+    private static let unsendableFileCodes: Set<URLError.Code> = [
+        .fileDoesNotExist,
+        .noPermissionsToReadFile,
+        .fileIsDirectory,
+        .zeroByteResource,
+    ]
 
     /// Whether the run is over: nothing is left for a resume to continue.
     var isFinal: Bool {
         switch self {
-        case .processingFailed, .cancelled, .notFound, .notStarted:
+        case .processingFailed, .cancelled, .notStarted:
             return true
         default:
             return false
@@ -957,7 +1018,19 @@ extension SplatError {
         guard let refusal = apiError else {
             return false
         }
+        if refusal.code == Self.missingSourceCode {
+            return true
+        }
         return refusal.statusCode == HTTPStatus.badRequest && refusal.message.hasPrefix(Self.missingSourceMessage)
+    }
+
+    /// Whether an upload failed before sending anything, because its file
+    /// can't be sent: no resume can send it either.
+    var isUnsendableFile: Bool {
+        guard case .uploadFailed(let cause) = self, let code = (cause as? URLError)?.code else {
+            return false
+        }
+        return Self.unsendableFileCodes.contains(code)
     }
 
     /// Whether storage refused an upload outright: a 4xx that isn't worth

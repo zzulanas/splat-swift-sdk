@@ -72,7 +72,13 @@ final class ScanModel {
     }
 
     /// The README's restart recipe, with both trailing closures.
-    func surviveRestart(videoFileURL: URL, poses: [ARKitPose], points: [[Float]], pendingID: String) async throws {
+    func surviveRestart(
+        videoFileURL: URL,
+        poses: [ARKitPose],
+        points: [[Float]],
+        captureFile: URL,
+        pendingID: String
+    ) async throws {
         var scene: SplatScene = try await client.createAndProcess(
             videoURL: videoFileURL,
             preset: .ultra,
@@ -81,15 +87,29 @@ final class ScanModel {
         ) { status, pct in
             self.progress = pct ?? 0
         } onSceneCreated: { id in
+            // Keep the ID and what the launch is built from.
             UserDefaults.standard.set(id, forKey: "pendingScene")
+            try? JSONEncoder().encode(Capture(poses: poses, points: points)).write(to: captureFile)
         }
 
-        // After a relaunch:
-        scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points) { status, _ in
+        // After a relaunch, with the saved capture:
+        let saved = try JSONDecoder().decode(Capture.self, from: Data(contentsOf: captureFile))
+        scene = try await client.resume(
+            sceneID: pendingID,
+            preset: .ultra,
+            arkitPoses: saved.poses,
+            lidarPoints: saved.points
+        ) { status, _ in
             self.status = status.rawValue
         }
         print(scene.id)
     }
+}
+
+/// What the README's restart recipe saves beside the scene ID.
+struct Capture: Codable {
+    let poses: [ARKitPose]?
+    let points: [[Float]]?
 }
 
 /// A view holding a scene in SwiftUI state, beside SwiftUI's own `Scene`.

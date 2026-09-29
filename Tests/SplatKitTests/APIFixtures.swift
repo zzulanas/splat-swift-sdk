@@ -424,6 +424,10 @@ enum Fixture {
     /// anything (api/src/lib/scenes.ts).
     static let sourceMissing = error("invalid_input", "Source file not found. Please try uploading again.")
 
+    /// The same 400 with its own code, source_missing, from
+    /// gaussian-splatting #323 (api/src/lib/scenes.ts at 23577c9).
+    static let sourceMissingCoded = error("source_missing", "Source file not found. Please try uploading again.")
+
     /// 400 from processScene when two poses name the same frame
     /// (api/src/lib/scenes.ts), before anything is claimed.
     static let duplicatePosePaths = error("invalid_input", "Duplicate file_path values in arkit_poses.")

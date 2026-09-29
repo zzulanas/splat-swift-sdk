@@ -136,27 +136,33 @@ do {
 }
 ```
 
-Any other error after the scene exists is final. No resume can get past it, so start over with a new scene:
+Any other error after the scene exists ends the run, and no resume can continue it:
 
 | Error | What happened |
 |---|---|
-| `SplatError.processingFailed` | The scene failed, including a launch the API failed. The server refunds a failed scene. |
+| `SplatError.processingFailed` | The server failed the scene, including a launch it failed, and refunds it. Rarely, a job the stale-job sweep failed still completes, so check `getScene` before starting over. |
 | `SplatError.cancelled` | The scene was cancelled. The server doesn't refund a job that had started. |
-| `SplatError.notFound` | The scene was deleted. |
+| `SplatError.notFound` | The scene was deleted. A 404 while waiting counts only once a replay of the launch also finds no scene, since the API answers a failed read with 404 too. |
+| `SplatError.uploadFailed` with `.fileDoesNotExist` or `.zeroByteResource` | The capture is missing or empty, so nothing was sent. It's checked before the scene is created too. |
 | `SplatError.requestFailed` with a 4xx | Storage refused the upload URL (403 once it expires, after an hour), or the API refused the launch request itself (400). |
 
-**Surviving an app restart.** Save the ID `onSceneCreated` passes. It fires as soon as the scene exists, before anything is charged. On relaunch, resume that scene with the same preset and capture. `resume` rebuilds the launch `createAndProcess` sent, so a launch that went through is replayed, not charged again, and then it waits:
+**Surviving an app restart.** Save the ID `onSceneCreated` passes, which fires as soon as the scene exists, before anything is charged. Save the capture the launch is built from too. On relaunch, resume that scene with the same preset and capture. `resume` rebuilds the launch `createAndProcess` sent, so a launch that went through is replayed, not charged again, and then it waits:
 
 ```swift
 scene = try await client.createAndProcess(videoURL: videoURL, preset: .ultra, arkitPoses: poses, lidarPoints: points) { status, pct in
     progress = pct ?? 0
 } onSceneCreated: { id in
+    // Keep the ID and what the launch is built from.
     UserDefaults.standard.set(id, forKey: "pendingScene")
+    try? JSONEncoder().encode(Capture(poses: poses, points: points)).write(to: captureFile)
 }
 
-// After a relaunch:
-scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points)
+// After a relaunch, with the saved capture:
+let saved = try JSONDecoder().decode(Capture.self, from: Data(contentsOf: captureFile))
+scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: saved.poses, lidarPoints: saved.points)
 ```
+
+`Capture` is your own `Codable` struct holding the poses and points (`ARKitPose` is `Codable`). `resume(sceneID:…)` requires every argument that shapes the launch, `nil` included, so a restart can't launch a different job by leaving one out.
 
 The upload URL isn't kept, so if the app was killed before its upload finished, the API refuses the launch (400) before charging anything: start over.
 

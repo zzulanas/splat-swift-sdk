@@ -8,9 +8,8 @@ extension SplatError {
     /// stopped before its outcome was known. Continue it with
     /// ``SplatClient/resume(_:onProgress:)``.
     ///
-    /// `resume` reads the scene first and does only what is missing, sending
-    /// exactly the request `createAndProcess` sent, so a scene is charged at
-    /// most once:
+    /// `resume` picks up at the step that stopped, sending exactly the request
+    /// `createAndProcess` sent, so a scene is charged at most once:
     ///
     /// | Phase | What was charged | What `resume` does |
     /// |---|---|---|
@@ -19,8 +18,9 @@ extension SplatError {
     /// | ``Phase/wait`` | The launch | Waits again |
     ///
     /// Errors no resume can get past are never interruptions. They are thrown
-    /// as themselves: a failed, cancelled or deleted scene, an upload URL the
-    /// storage refuses, or a launch request the API refuses outright.
+    /// as themselves: a failed, cancelled or deleted scene, a capture that is
+    /// missing or empty, an upload URL the storage refuses, or a launch request
+    /// the API refuses outright.
     ///
     /// ```swift
     /// do {

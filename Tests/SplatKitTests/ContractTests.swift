@@ -105,6 +105,7 @@ final class ContractTests: XCTestCase {
         FixtureCase("processQuotaExceeded", Fixture.processQuotaExceeded, "processScene", 429),
         FixtureCase("launchRejected", Fixture.launchRejected, "processScene", 502),
         FixtureCase("sourceMissing", Fixture.sourceMissing, "processScene", 400),
+        FixtureCase("sourceMissingCoded", Fixture.sourceMissingCoded, "processScene", 400),
         FixtureCase("duplicatePosePaths", Fixture.duplicatePosePaths, "processScene", 400),
         FixtureCase("alreadyProcessing", Fixture.alreadyProcessing, "processScene", 409),
         FixtureCase("keyLookupFailed", Fixture.keyLookupFailed, "getScene", 401),

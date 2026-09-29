@@ -54,8 +54,9 @@ final class PollingTask: Sendable {
     static let toleratedRejections = 3
 
     /// How long after the scene was last read a 401 or 404 still counts as
-    /// a blip, however often it polls. After it, a 404 means the scene was
-    /// deleted, which ends `createAndProcess` for good.
+    /// a blip, however often it polls. After it, the error is thrown; a 404
+    /// then ends `createAndProcess` only if a launch replay confirms the
+    /// scene is gone.
     static let rejectionWindow: TimeInterval = 5 * 60
 
     /// Polls in a row that must find `uploading` before concluding nothing was

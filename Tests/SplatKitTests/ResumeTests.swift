@@ -289,6 +289,49 @@ extension SplatClientTests {
         XCTAssertEqual(MockURLProtocol.requests(to: "/v1/scenes").count, 1)
     }
 
+    func testResumeUploadsAgainOnTheMissingSourceCode() async throws {
+        // The same recovery, with the code gaussian-splatting #323 gives it.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub(
+            "/upload",
+            .failure(.networkConnectionLost),
+            MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:])
+        )
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissingCoded), .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene), .json(200, Fixture.completeScene))
+        let client = makeClient(configuration: patientPolling)
+
+        let interruption = try await interruptedUpload(client)
+        let scene = try await client.resume(interruption)
+
+        XCTAssertEqual(scene.status, .complete)
+        XCTAssertEqual(MockURLProtocol.requests(to: "/upload").count, 2)
+    }
+
+    func testTheMissingSourceCodeIsEnough() {
+        // Matched on the code first, so a reworded message still counts.
+        let refusal = SplatError.APIError(statusCode: 400, code: "source_missing", message: "Upload the source first.")
+
+        XCTAssertTrue(SplatError.requestFailed(refusal).isMissingSource)
+    }
+
+    func testTheMissingSourceMessageCountsWithoutTheCode() {
+        // Servers without #323 send it as invalid_input, like other 400s.
+        let missing = SplatError.APIError(
+            statusCode: 400,
+            code: "invalid_input",
+            message: "Source file not found. Please try uploading again."
+        )
+        let duplicate = SplatError.APIError(
+            statusCode: 400,
+            code: "invalid_input",
+            message: "Duplicate file_path values in arkit_poses."
+        )
+
+        XCTAssertTrue(SplatError.requestFailed(missing).isMissingSource)
+        XCTAssertFalse(SplatError.requestFailed(duplicate).isMissingSource)
+    }
+
     func testAMissingSourceRightAfterTheUploadIsFinal() async throws {
         // The upload was accepted, yet the launch finds no source. Sending
         // the same file again would meet the same answer on every resume.
@@ -417,7 +460,9 @@ extension SplatClientTests {
         MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing))
         MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
 
-        let error = await expectSplatError { try await self.makeClient().resume(sceneID: Fixture.sceneID) }
+        let error = await expectSplatError {
+            try await self.makeClient().resume(sceneID: Fixture.sceneID, preset: .standard, arkitPoses: nil, lidarPoints: nil)
+        }
 
         guard case .requestFailed(let refusal) = error else {
             return XCTFail("Expected the launch's refusal, got \(String(describing: error))")
@@ -722,9 +767,10 @@ extension SplatClientTests {
 
     func testADeletedSceneEndsTheWait() async throws {
         // Deleted through the API while createAndProcess waited: the reads
-        // 404 for good, so there is nothing left to resume.
+        // 404 for good, and so does a replay of the launch, which processScene
+        // answers with 404 only for a missing scene. Nothing is left to resume.
         stubCreateAndUpload()
-        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted), .json(404, Fixture.sceneNotFound))
         MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .json(404, Fixture.sceneNotFound))
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
@@ -732,9 +778,48 @@ extension SplatClientTests {
         guard case .notFound = error else {
             return XCTFail("Expected .notFound, got \(String(describing: error))")
         }
+        XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 2)
+    }
+
+    func testAFailedReadWhileWaitingIsNotADeletion() async throws {
+        // The API answers a failed scene read with 404 too
+        // (getSceneStatus in api/src/lib/scenes.ts). The launch still
+        // replays, so the scene exists and its paid job may be running.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .json(404, Fixture.sceneNotFound))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.phase, .wait)
+        XCTAssertEqual(interruption.sceneID, Fixture.sceneID)
+        guard case .notFound = interruption.underlying as? SplatError else {
+            return XCTFail("Expected .notFound underneath, got \(interruption.underlying)")
+        }
     }
 
     func testResumingADeletedSceneIsFinal() async throws {
+        MockURLProtocol.stub(processPath, .json(404, Fixture.sceneNotFound))
+        MockURLProtocol.stub(Fixture.scenePath, .json(404, Fixture.sceneNotFound))
+        let interruption = SplatError.Interruption(
+            sceneID: Fixture.sceneID,
+            phase: .wait,
+            idempotencyKey: "process-\(Fixture.sceneID)",
+            underlying: SplatError.timeout,
+            request: ResumableRequest(upload: nil, launch: ProcessSceneBody(enableLOD: false, arkitPoses: nil, lidarPoints: nil))
+        )
+
+        let error = await expectSplatError { try await self.makeClient().resume(interruption) }
+
+        guard case .notFound = error else {
+            return XCTFail("Expected .notFound, got \(String(describing: error))")
+        }
+    }
+
+    func testADeletionWithoutALaunchToReplayStaysResumable() async throws {
+        // Made with the public initializer, the interruption has no launch to
+        // replay, so its 404s can't be told from failed reads.
         MockURLProtocol.stub(Fixture.scenePath, .json(404, Fixture.sceneNotFound))
         let interruption = SplatError.Interruption(
             sceneID: Fixture.sceneID,
@@ -745,9 +830,9 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().resume(interruption) }
 
-        guard case .notFound = error else {
-            return XCTFail("Expected .notFound, got \(String(describing: error))")
-        }
+        let again = try XCTUnwrap(self.interruption(error))
+        XCTAssertEqual(again.phase, .wait)
+        XCTAssertTrue(MockURLProtocol.requests(to: processPath).isEmpty)
     }
 
     func testASceneDeletedFromTheDashboardCannotBeLaunched() async throws {
@@ -870,5 +955,81 @@ extension SplatClientTests {
             XCTAssertLessThan(text.count, 2_000, excerpt)
             XCTAssertTrue(text.contains(Fixture.sceneID), excerpt)
         }
+    }
+
+    // MARK: - The capture file
+
+    /// A capture path with nothing at it.
+    private func missingVideo() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("splatkit-missing-\(UUID().uuidString).mp4")
+    }
+
+    /// The `URLError` code inside `.uploadFailed`, or `nil`.
+    private func uploadFailure(_ error: SplatError?) -> URLError.Code? {
+        guard case .uploadFailed(let cause) = error else {
+            return nil
+        }
+        return (cause as? URLError)?.code
+    }
+
+    func testAMissingCaptureIsNeverUploaded() async throws {
+        // URLSession sends a missing file as an empty PUT, storage accepts
+        // it, and the launch would be charged for an empty video. Checked
+        // before the scene is created, so no monthly scene creation is spent.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:]))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: self.missingVideo()) }
+
+        XCTAssertEqual(uploadFailure(error), .fileDoesNotExist, "\(String(describing: error))")
+        XCTAssertTrue(MockURLProtocol.requests(to: "/v1/scenes").isEmpty)
+        XCTAssertTrue(MockURLProtocol.requests(to: "/upload").isEmpty)
+    }
+
+    func testAnEmptyCaptureIsNeverUploaded() async throws {
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:]))
+        let empty = missingVideo()
+        try Data().write(to: empty)
+        addTeardownBlock { try? FileManager.default.removeItem(at: empty) }
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: empty) }
+
+        XCTAssertEqual(uploadFailure(error), .zeroByteResource, "\(String(describing: error))")
+        XCTAssertTrue(MockURLProtocol.requests(to: "/upload").isEmpty)
+    }
+
+    func testResumeAfterTheCaptureIsGoneIsFinal() async throws {
+        // The upload never landed, and the capture was deleted before resume
+        // ran (SplatScanner records to a temporary file): nothing can send it.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub(
+            "/upload",
+            .failure(.networkConnectionLost),
+            MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:])
+        )
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing), .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene), .json(200, Fixture.completeScene))
+        let client = makeClient(configuration: patientPolling)
+        let video = try makeVideo()
+
+        let error = await expectSplatError { try await client.createAndProcess(videoURL: video) }
+        let stopped = try XCTUnwrap(interruption(error))
+        try FileManager.default.removeItem(at: video)
+        let resumed = await expectSplatError { try await client.resume(stopped) }
+
+        XCTAssertEqual(uploadFailure(resumed), .fileDoesNotExist, "\(String(describing: resumed))")
+        XCTAssertEqual(MockURLProtocol.requests(to: "/upload").count, 1)
+        XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 1)
+    }
+
+    func testUploadVideoRefusesAMissingFile() async throws {
+        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:]))
+        let target = try XCTUnwrap(URL(string: "https://r2.dev/upload?token=xyz"))
+
+        let error = await expectSplatError { try await self.makeClient().uploadVideo(from: self.missingVideo(), to: target) }
+
+        XCTAssertEqual(uploadFailure(error), .fileDoesNotExist, "\(String(describing: error))")
+        XCTAssertTrue(MockURLProtocol.requests(to: "/upload").isEmpty)
     }
 }

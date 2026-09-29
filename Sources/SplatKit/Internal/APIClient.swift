@@ -33,7 +33,9 @@ public enum SplatError: Error, LocalizedError, Sendable {
     case decodingError(Error)
 
     /// The video upload failed without a response, e.g. the connection
-    /// dropped. An upload rejected with an error status is ``requestFailed(_:)``.
+    /// dropped, or before sending: the file is missing, unreadable or empty
+    /// (a `URLError` such as `.fileDoesNotExist` or `.zeroByteResource`). An
+    /// upload rejected with an error status is ``requestFailed(_:)``.
     case uploadFailed(Error)
 
     /// ``SplatScanner`` could not record, e.g. the device ran out of storage.
@@ -673,6 +675,8 @@ final class APIClient: Sendable {
 
     /// Upload a file to a presigned URL with a raw PUT request.
     func uploadFile(from fileURL: URL, to uploadURL: URL, contentType: String = "video/mp4") async throws {
+        try Self.checkUploadable(fileURL)
+
         var request = URLRequest(url: uploadURL, timeoutInterval: requestTimeout)
         request.httpMethod = HTTPMethod.put.rawValue
         request.setValue(contentType, forHTTPHeaderField: HTTPHeader.contentType)
@@ -697,6 +701,37 @@ final class APIClient: Sendable {
                 throw CancellationError()
             }
             throw SplatError.uploadFailed(error)
+        }
+    }
+
+    /// Refuse a file that isn't there to send. URLSession would PUT a missing
+    /// or empty file as a 0-byte body, which storage accepts, and a launch
+    /// after it would be charged for an empty video.
+    ///
+    /// - Throws: ``SplatError/uploadFailed(_:)`` with a `URLError`:
+    ///   `.fileDoesNotExist`, `.noPermissionsToReadFile`, `.fileIsDirectory`
+    ///   or `.zeroByteResource`.
+    static func checkUploadable(_ fileURL: URL) throws {
+        func unsendable(_ code: URLError.Code) -> SplatError {
+            .uploadFailed(URLError(code, userInfo: [NSURLErrorFailingURLErrorKey: fileURL]))
+        }
+
+        // FileManager, not URL.resourceValues: a URL caches those, so a file
+        // deleted since the URL was last checked would still look present.
+        let files = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard files.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
+            throw unsendable(.fileDoesNotExist)
+        }
+        if isDirectory.boolValue {
+            throw unsendable(.fileIsDirectory)
+        }
+        if !files.isReadableFile(atPath: fileURL.path) {
+            throw unsendable(.noPermissionsToReadFile)
+        }
+        let size = (try? files.attributesOfItem(atPath: fileURL.path))?[.size] as? Int ?? 0
+        if size == 0 {
+            throw unsendable(.zeroByteResource)
         }
     }
 
