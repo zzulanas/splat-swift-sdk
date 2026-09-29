@@ -451,6 +451,7 @@ final class APIClient: Sendable {
                 debugDescription: "Cannot decode date: \(string)"
             )
         }
+        decoder.userInfo[.splatBaseURL] = baseURL
         self.decoder = decoder
 
         let encoder = JSONEncoder()

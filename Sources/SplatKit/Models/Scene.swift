@@ -79,7 +79,8 @@ public struct SceneStatus: RawRepresentable, Hashable, Codable, Sendable, CaseIt
     /// Processing was cancelled.
     public static let cancelled = SceneStatus(rawValue: "cancelled")
 
-    /// Every status this SDK names, in pipeline order.
+    /// Every status this SDK names, in pipeline order. It grows when the SDK
+    /// names a new stage, so don't use it as a fixed-size or indexed list.
     public static let allCases: [SceneStatus] = [
         .uploading,
         .previewExtracting,
@@ -231,9 +232,11 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
 
-        // Build thumbnail URL from the scene ID (API route, not R2 key)
+        // Build thumbnail URL from the scene ID (API route, not R2 key), on
+        // the deployment the scene came from.
         if thumbnailR2Key != nil {
-            thumbnailURL = URL(string: "https://api.splat-3d.com/v1/scenes/\(id)/thumbnail")
+            let apiBase = decoder.userInfo[.splatBaseURL] as? URL ?? Scene.productionAPI
+            thumbnailURL = apiBase.appendingPathComponent("v1/scenes/\(id)/thumbnail")
         } else {
             thumbnailURL = nil
         }
@@ -315,6 +318,20 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
             && lhs.createdAt == rhs.createdAt
             && lhs.updatedAt == rhs.updatedAt
     }
+}
+
+// MARK: - Thumbnail URL
+
+extension CodingUserInfoKey {
+
+    /// The API a response came from, so decoded URLs point back at it.
+    static let splatBaseURL = CodingUserInfoKey(rawValue: "SplatKit.baseURL")!
+}
+
+extension Scene {
+
+    /// Thumbnail host when a scene is decoded outside ``SplatClient``.
+    fileprivate static let productionAPI = URL(string: "https://api.splat-3d.com")!
 }
 
 // MARK: - Viewer URL
