@@ -1,5 +1,6 @@
 import Foundation
 import SplatKit
+import SwiftUI
 
 /// A main-actor view model, as a SwiftUI app would have.
 @MainActor
@@ -71,19 +72,37 @@ final class ScanModel {
     }
 
     /// The README's restart recipe, with both trailing closures.
-    func surviveRestart(videoFileURL: URL, poses: [ARKitPose], pendingID: String) async throws {
-        var scene = try await client.createAndProcess(videoURL: videoFileURL, arkitPoses: poses) { status, pct in
+    func surviveRestart(videoFileURL: URL, poses: [ARKitPose], points: [[Float]], pendingID: String) async throws {
+        var scene: SplatScene = try await client.createAndProcess(
+            videoURL: videoFileURL,
+            preset: .ultra,
+            arkitPoses: poses,
+            lidarPoints: points
+        ) { status, pct in
             self.progress = pct ?? 0
         } onSceneCreated: { id in
             UserDefaults.standard.set(id, forKey: "pendingScene")
         }
 
-        do {
-            scene = try await client.waitForScene(id: pendingID)
-        } catch SplatError.notStarted {
-            _ = try await client.processScene(id: pendingID, arkitPoses: poses)
-            scene = try await client.waitForScene(id: pendingID)
+        // After a relaunch:
+        scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points) { status, _ in
+            self.status = status.rawValue
         }
         print(scene.id)
+    }
+}
+
+/// A view holding a scene in SwiftUI state, beside SwiftUI's own `Scene`.
+struct SceneView: View {
+
+    let client: SplatClient
+    let videoFileURL: URL
+    @State private var scene: SplatScene?
+
+    var body: some View {
+        Text(scene?.id ?? "Processing")
+            .task {
+                scene = try? await client.createAndProcess(videoURL: videoFileURL)
+            }
     }
 }

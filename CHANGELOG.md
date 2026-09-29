@@ -110,8 +110,11 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   and launches only if nothing was launched, with the identical request (the
   API hashes `enable_lod` and `lidar_points`, so a hand-rebuilt launch could
   409 or drop them).
+- `resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)` continues a
+  scene after an app restart, from its saved ID and the same preset and
+  capture, rebuilding the same request.
 - `onSceneCreated` on `createAndProcess`: the scene ID as soon as the scene
-  exists, before anything is charged, so an app killed mid-wait can find it.
+  exists, before anything is charged, so an app killed mid-wait can resume it.
 - `waitForScene(id:onProgress:)` to pick up a launched scene. It keeps polling
   through network failures, 5xx and rate limits until its deadline; once it
   has read the scene, it also rides out up to 3 polls of 401 or 404, which the

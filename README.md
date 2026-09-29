@@ -82,6 +82,7 @@ let scene = try await client.createAndProcess(
 | `processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)` | Trigger GPU processing |
 | `waitForScene(id:onProgress:)` | Poll a scene until processing finishes |
 | `resume(_:onProgress:)` | Continue an interrupted `createAndProcess` without paying again |
+| `resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)` | Continue a scene after an app restart, from its saved ID |
 | `getScene(id:)` | Get scene status and metadata |
 | `listScenePage(cursor:limit:)` | One page of scenes, newest first, with the next page's cursor |
 | `allScenes(pageSize:)` | Every scene, fetched a page at a time as you iterate |
@@ -136,25 +137,22 @@ do {
 
 Outcomes the server has settled are thrown as themselves and can't be resumed: `SplatError.processingFailed`, `SplatError.cancelled`, and the error of a launch the API failed and refunded. Start over with a new scene.
 
-**Surviving an app restart.** Save the ID `onSceneCreated` passes. It fires as soon as the scene exists, before anything is charged. On relaunch, wait for that scene. If it was never launched, launch it with the same capture:
+**Surviving an app restart.** Save the ID `onSceneCreated` passes. It fires as soon as the scene exists, before anything is charged. On relaunch, resume that scene with the same preset and capture. `resume` rebuilds the launch `createAndProcess` sent, so a launch that went through is replayed, not charged again, and then it waits:
 
 ```swift
-scene = try await client.createAndProcess(videoURL: videoURL, arkitPoses: poses) { status, pct in
+scene = try await client.createAndProcess(videoURL: videoURL, preset: .ultra, arkitPoses: poses, lidarPoints: points) { status, pct in
     progress = pct ?? 0
 } onSceneCreated: { id in
     UserDefaults.standard.set(id, forKey: "pendingScene")
 }
 
 // After a relaunch:
-do {
-    scene = try await client.waitForScene(id: pendingID)
-} catch SplatError.notStarted {
-    _ = try await client.processScene(id: pendingID, arkitPoses: poses)
-    scene = try await client.waitForScene(id: pendingID)
-}
+scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points)
 ```
 
-`processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass your own, so repeating it for a scene with the same inputs replays the original launch. `createAndProcess` launches with `enableLOD: preset.enableLOD`; pass the same value when you launch it yourself.
+The upload URL isn't kept, so if the app was killed before its upload finished, the API refuses the launch (400) before charging anything: start over.
+
+`processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass your own, so repeating it for a scene with the same inputs replays the original launch.
 
 **Waiting.** `waitForScene` keeps polling through network failures, 5xx and rate limits until its deadline, because they say nothing about the job. Once it has read the scene, it also rides out a short run of 401 or 404, which the API returns when its database blips. After the deadline it looks once more, then throws `SplatError.timeout` (the job may still finish). It throws `SplatError.notStarted` for a scene still `uploading` on two polls in a row.
 

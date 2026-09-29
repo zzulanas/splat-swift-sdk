@@ -104,7 +104,7 @@ extension SplatError.Interruption: CustomStringConvertible, CustomDebugStringCon
     /// the upload carries it in its `userInfo`.
     private var underlyingDescription: String {
         let text = String(reflecting: underlying)
-        guard let uploadURL = request?.uploadURL.absoluteString else {
+        guard let uploadURL = request?.upload?.uploadURL.absoluteString else {
             return text
         }
         return text.replacingOccurrences(of: uploadURL, with: "<upload URL>")
@@ -150,12 +150,20 @@ extension SplatError.Interruption {
 
 // MARK: - ResumableRequest
 
-/// The parts of a `createAndProcess` call that `resume` repeats: the file and
-/// where to upload it, and the exact launch body. The API hashes the body, so
-/// a launch repeated with anything less (a lost `enable_lod` or LiDAR points)
-/// would be a different request: a 409, or a job without them.
+/// The parts of a `createAndProcess` call that `resume` repeats: the exact
+/// launch body, and the file and where to upload it. The API hashes the body,
+/// so a launch repeated with anything less (a lost `enable_lod` or LiDAR
+/// points) would be a different request: a 409, or a job without them.
 struct ResumableRequest: Sendable {
-    let videoURL: URL
-    let uploadURL: URL
+
+    /// The capture and its presigned URL. `nil` when resuming after an app
+    /// restart: `onSceneCreated` passes only the scene ID.
+    let upload: Upload?
+
     let launch: ProcessSceneBody
+
+    struct Upload: Sendable {
+        let videoURL: URL
+        let uploadURL: URL
+    }
 }

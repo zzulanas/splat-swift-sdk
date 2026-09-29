@@ -385,6 +385,47 @@ extension SplatClientTests {
         }
     }
 
+    // MARK: - After an app restart
+
+    func testResumeAfterARestartSendsTheSameLaunch() async throws {
+        // The app was killed before the launch went through, keeping only the
+        // scene ID and its capture. Resuming rebuilds the launch
+        // createAndProcess sent, LOD and LiDAR included, under the same key.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .failure(.networkConnectionLost), .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene), .json(200, Fixture.completeScene))
+        let client = makeClient(configuration: patientPolling)
+
+        _ = try await interruptedUltraLaunch(client)
+        let scene = try await client.resume(
+            sceneID: Fixture.sceneID,
+            preset: .ultra,
+            arkitPoses: (0..<6).map(makePose),
+            lidarPoints: [[0, 0, 0], [1, 1, 1]]
+        )
+
+        XCTAssertEqual(scene.status, .complete)
+        let launches = MockURLProtocol.requests(to: processPath)
+        XCTAssertEqual(launches.count, 2)
+        XCTAssertEqual(Set(launches.map { $0.value(forHTTPHeaderField: "Idempotency-Key") }), ["process-\(Fixture.sceneID)"])
+        XCTAssertEqual(launches.first?.httpBody, launches.last?.httpBody)
+    }
+
+    func testResumeAfterARestartCannotUploadAgain() async throws {
+        // Killed before the upload finished. The upload URL wasn't kept, so
+        // the launch's refusal (no source, before any charge) is final.
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
+
+        let error = await expectSplatError { try await self.makeClient().resume(sceneID: Fixture.sceneID) }
+
+        guard case .requestFailed(let refusal) = error else {
+            return XCTFail("Expected the launch's refusal, got \(String(describing: error))")
+        }
+        XCTAssertEqual(refusal.statusCode, 400)
+        XCTAssertTrue(MockURLProtocol.requests(to: "/upload").isEmpty)
+    }
+
     // MARK: - Scene ID before the charge
 
     func testSceneIDArrivesBeforeTheUpload() async throws {

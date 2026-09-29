@@ -653,11 +653,10 @@ public final class SplatClient: Sendable {
     ///   upload URL (403 once it expires, after an hour), or the API refused
     ///   the launch request itself (400).
     ///
-    /// If the app may be killed while it waits, save the ID `onSceneCreated`
-    /// passes. On relaunch, call ``waitForScene(id:onProgress:)``; if it throws
-    /// ``SplatError/notStarted``, nothing was launched, so launch it with
-    /// ``processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``
-    /// (a 400 there means the upload never landed: start over).
+    /// If the app may be killed while it works, save the ID `onSceneCreated`
+    /// passes. On relaunch, continue with
+    /// ``resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)``, passing
+    /// the same preset and capture.
     ///
     /// - Parameters:
     ///   - videoURL: Local file URL of the video to upload.
@@ -692,12 +691,17 @@ public final class SplatClient: Sendable {
             sceneID: sceneID,
             idempotencyKey: Self.launchKey(for: sceneID),
             request: ResumableRequest(
-                videoURL: videoURL,
-                uploadURL: uploadURL,
-                launch: ProcessSceneBody(enableLOD: preset.enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
+                upload: ResumableRequest.Upload(videoURL: videoURL, uploadURL: uploadURL),
+                launch: Self.launchBody(preset: preset, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
             )
         )
         return try await proceed(run, from: .upload, onProgress: onProgress)
+    }
+
+    /// The launch `createAndProcess` sends, rebuilt identically by
+    /// ``resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)``.
+    private static func launchBody(preset: SceneParams, arkitPoses: [ARKitPose]?, lidarPoints: [[Float]]?) -> ProcessSceneBody {
+        ProcessSceneBody(enableLOD: preset.enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
     }
 
     // MARK: - Resume
@@ -740,6 +744,48 @@ public final class SplatClient: Sendable {
         // continues with the launch; see deliver(_:for:phase:onProgress:).
         let start: SplatError.Interruption.Phase = interruption.phase == .wait ? .wait : .launch
         return try await proceed(run, from: start, onProgress: onProgress)
+    }
+
+    /// Continue a scene that `createAndProcess` created in an earlier run of
+    /// the app, e.g. one killed while it waited, without paying for another
+    /// job. Pass the ID `onSceneCreated` passed, and the preset and capture
+    /// `createAndProcess` was given: this rebuilds exactly the launch it sent
+    /// (same body, same key), launches, and waits. The API replays a launch
+    /// that went through instead of charging it again.
+    ///
+    /// ```swift
+    /// // After a relaunch:
+    /// scene = try await client.resume(sceneID: pendingID, preset: .ultra, arkitPoses: poses, lidarPoints: points)
+    /// ```
+    ///
+    /// The upload URL isn't kept, so this can't upload. If the app was killed
+    /// before its upload finished, the API refuses the launch (400) before
+    /// charging anything: start over with a new scene.
+    ///
+    /// - Parameters:
+    ///   - sceneID: The ID `onSceneCreated` passed.
+    ///   - preset: The preset `createAndProcess` was given.
+    ///   - arkitPoses: The ARKit poses it was given.
+    ///   - lidarPoints: The LiDAR points it was given.
+    ///   - onProgress: Optional callback, on the main actor, for status updates.
+    /// - Returns: The completed scene.
+    /// - Throws: As ``resume(_:onProgress:)``.
+    public func resume(
+        sceneID: String,
+        preset: SceneParams = .standard,
+        arkitPoses: [ARKitPose]? = nil,
+        lidarPoints: [[Float]]? = nil,
+        onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
+    ) async throws -> SplatScene {
+        let run = Run(
+            sceneID: sceneID,
+            idempotencyKey: Self.launchKey(for: sceneID),
+            request: ResumableRequest(
+                upload: nil,
+                launch: Self.launchBody(preset: preset, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
+            )
+        )
+        return try await proceed(run, from: .launch, onProgress: onProgress)
     }
 
     // MARK: - Upload, Launch, Wait (internal)
@@ -806,8 +852,8 @@ public final class SplatClient: Sendable {
         onProgress: ProgressHandler?
     ) async throws {
         var uploaded = false
-        if phase == .upload {
-            try await upload(request, onProgress: onProgress)
+        if phase == .upload, let upload = request.upload {
+            try await send(upload, onProgress: onProgress)
             uploaded = true
             phase = .launch
         }
@@ -815,8 +861,12 @@ public final class SplatClient: Sendable {
         do {
             try await settleOrLaunch(run, body: request.launch)
         } catch let final as Final where final.error.isMissingSource && !uploaded {
+            // Without the upload URL (after an app restart) the refusal stands.
+            guard let upload = request.upload else {
+                throw final
+            }
             phase = .upload
-            try await upload(request, onProgress: onProgress)
+            try await send(upload, onProgress: onProgress)
             phase = .launch
             try await settleOrLaunch(run, body: request.launch)
         }
@@ -824,10 +874,10 @@ public final class SplatClient: Sendable {
     }
 
     /// Send the capture to its presigned URL.
-    private func upload(_ request: ResumableRequest, onProgress: ProgressHandler?) async throws {
+    private func send(_ upload: ResumableRequest.Upload, onProgress: ProgressHandler?) async throws {
         await onProgress?(.uploading, 0)
         do {
-            try await uploadVideo(from: request.videoURL, to: request.uploadURL)
+            try await uploadVideo(from: upload.videoURL, to: upload.uploadURL)
         } catch let error as SplatError where error.isStorageRefusal {
             // The URL itself was refused, e.g. once it expired after an hour:
             // no resume can upload to this scene.
