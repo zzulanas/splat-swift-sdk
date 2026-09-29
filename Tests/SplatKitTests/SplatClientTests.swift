@@ -120,7 +120,12 @@ final class MockURLProtocol: URLProtocol {
                 return
             }
             if let failure = stub.failure {
-                client?.urlProtocol(self, didFailWithError: failure)
+                // A real network failure names the URL that failed.
+                let named = URLError(failure.code, userInfo: [
+                    NSURLErrorFailingURLErrorKey: request.url!,
+                    NSURLErrorFailingURLStringErrorKey: request.url!.absoluteString,
+                ])
+                client?.urlProtocol(self, didFailWithError: named)
                 return
             }
             let response = HTTPURLResponse(
