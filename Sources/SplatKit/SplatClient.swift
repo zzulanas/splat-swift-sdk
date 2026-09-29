@@ -453,9 +453,7 @@ public final class SplatClient: Sendable {
     /// - Parameters:
     ///   - id: The scene ID.
     ///   - update: The fields to change.
-    /// - Returns: The updated scene. It is built from the stored record, so
-    ///   ``SplatScene/downloadURL`` and ``SplatScene/format`` are `nil`; use
-    ///   ``getScene(id:)`` for those.
+    /// - Returns: The updated scene, in the shape ``getScene(id:)`` returns.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
     ///   ``SplatError/requestFailed(_:)`` with code `invalid_input` if `update`
     ///   sets no fields.

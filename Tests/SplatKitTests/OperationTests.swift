@@ -76,9 +76,10 @@ extension SplatClientTests {
         XCTAssertTrue(scene.isPublic)
         XCTAssertEqual(scene.status, .complete)
         XCTAssertNotNil(scene.thumbnailURL)
-        // The PATCH response is the stored row, which has no computed URLs.
-        XCTAssertNil(scene.downloadURL)
-        XCTAssertNil(scene.format)
+        // PATCH answers in the public shape GET serves, URLs included.
+        XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/a1b2c3d4e5f6")
+        XCTAssertEqual(scene.downloadURL?.absoluteString, "https://api.splat-3d.com/v1/scenes/a1b2c3d4e5f6/download")
+        XCTAssertEqual(scene.format, .sog)
 
         let request = MockURLProtocol.requests(to: Fixture.scenePath).first
         XCTAssertEqual(request?.httpMethod, "PATCH")

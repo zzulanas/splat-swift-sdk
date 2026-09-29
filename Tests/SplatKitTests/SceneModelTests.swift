@@ -54,6 +54,33 @@ extension SplatClientTests {
         XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/local")
     }
 
+    func testANullViewerURLIsKept() async throws {
+        // The API sends viewer_url null when a scene has no model to show,
+        // even once it is complete (toPublicScene in api/src/lib/scenes.ts).
+        MockURLProtocol.mockResponses["/v1/scenes/no-model"] =
+            (200, scenePayload(id: "no-model", status: "complete", extra: "\"viewer_url\": null"))
+
+        let scene = try await makeClient().getScene(id: "no-model")
+
+        XCTAssertNil(scene.viewerURL)
+    }
+
+    func testEncodingKeepsANullViewerURL() throws {
+        let json = """
+            {"id": "no-model", "status": "complete", "is_public": false, "viewer_url": null,
+             "created_at": "2026-09-28T12:00:00Z", "updated_at": "2026-09-28T12:00:00Z"}
+            """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        let scene = try decoder.decode(SplatScene.self, from: Data(json.utf8))
+        let again = try decoder.decode(SplatScene.self, from: encoder.encode(scene))
+
+        XCTAssertNil(again.viewerURL)
+    }
+
     func testPreviewReadyIsInProgress() async throws {
         MockURLProtocol.mockResponses["/v1/scenes/preview"] =
             (200, scenePayload(id: "preview", status: "preview_ready"))

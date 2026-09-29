@@ -256,57 +256,30 @@ enum Fixture {
     }
     """
 
-    /// PATCH /v1/scenes/{id} → 200. updateScene returns the whole updated row
-    /// (`.select()` in api/src/lib/scenes.ts); keys are the scenes Row type in
-    /// api/src/lib/types.ts. Spec: UpdateSceneResponse (an untyped record).
+    /// PATCH /v1/scenes/{id} → 200. updateScene answers with toPublicScene,
+    /// the public shape GET serves, every key present (api/src/lib/scenes.ts,
+    /// since gaussian-splatting #320). A complete scene with a SOG model gets
+    /// its viewer and download URLs. Spec: UpdateSceneResponse (an untyped record).
     static let updatedScene = """
     {
         "data": {
             "id": "a1b2c3d4e5f6",
-            "user_id": "6f1c2b9e-3d4a-4e5f-8a7b-9c0d1e2f3a4b",
             "title": "Kitchen",
-            "description": null,
             "address": null,
             "status": "complete",
-            "training_model": "gsplat",
             "is_public": true,
-            "is_featured": false,
-            "video_r2_key": "tours/a1b2c3d4e5f6/source.mp4",
-            "ply_r2_key": "tours/a1b2c3d4e5f6/model.ply",
-            "sog_r2_key": "tours/a1b2c3d4e5f6/model.sog",
             "thumbnail_r2_key": "tours/a1b2c3d4e5f6/thumbnail.png",
-            "preview_frames_r2_prefix": null,
-            "preview_ply_r2_key": null,
-            "video_size_bytes": 52428800,
-            "video_duration_seconds": null,
-            "video_width": null,
-            "video_height": null,
-            "ply_size_bytes": null,
-            "sog_size_bytes": null,
-            "num_frames_extracted": null,
-            "num_frames_after_filter": null,
             "num_gaussians": 1940000,
-            "processing_stage": null,
-            "processing_pct": 100,
-            "processing_error": null,
-            "processing_started_at": "2026-09-28T12:00:30.1+00:00",
-            "processing_completed_at": "\(updatedAt)",
-            "training_time_seconds": null,
-            "training_iterations": 7000,
-            "psnr": null,
             "ssim": null,
             "psnr_holdout": null,
             "ssim_holdout": null,
-            "camera_hint": null,
-            "coordinate_system": null,
-            "lod_meta_r2_key": null,
-            "lod_chunk_count": null,
-            "lod_total_size_bytes": null,
-            "params": null,
-            "modal_job_id": null,
-            "modal_call_id": null,
-            "webhook_url": null,
-            "webhook_secret": null,
+            "processing_stage": null,
+            "processing_pct": 100,
+            "processing_error": null,
+            "viewer_url": "https://splat-3d.com/tour/a1b2c3d4e5f6",
+            "download_url": "https://api.splat-3d.com/v1/scenes/a1b2c3d4e5f6/download",
+            "format": "sog",
+            "lod_meta_url": null,
             "created_at": "\(createdAt)",
             "updated_at": "2026-09-28T12:20:00.5+00:00"
         },
