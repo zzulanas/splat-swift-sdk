@@ -1,0 +1,12 @@
+// Build settings for SplatCapture.
+//
+// The API key comes from Secrets.xcconfig next to this file, which git
+// ignores. Create it from the example and set SPLAT_API_KEY there:
+//
+//   cp Secrets.example.xcconfig Secrets.xcconfig
+//
+// Never commit a key: this repository is public.
+
+SPLAT_API_KEY =
+
+#include? "Secrets.xcconfig"
