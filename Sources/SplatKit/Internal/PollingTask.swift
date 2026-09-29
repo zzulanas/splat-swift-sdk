@@ -34,7 +34,7 @@ final class PollingTask: Sendable {
     ///   - sceneId: The scene ID to poll.
     ///   - client: The API client to use for requests.
     ///   - onProgress: Optional callback invoked after each poll with the current status and progress percentage.
-    /// - Returns: The final ``Scene`` in a terminal state (`complete` or `failed`).
+    /// - Returns: The final ``SplatScene`` in a terminal state (`complete` or `failed`).
     /// - Throws: ``SplatError/timeout`` if the scene doesn't complete within the timeout.
     ///           ``SplatError/processingFailed(_:)`` if the scene enters the `failed` state.
     ///           ``SplatError/cancelled`` if the task is cancelled.
@@ -42,15 +42,15 @@ final class PollingTask: Sendable {
         sceneId: String,
         using client: APIClient,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
             // Check for task cancellation
             try Task.checkCancellation()
 
-            let scene: Scene = try await client.request(
-                Scene.self,
+            let scene: SplatScene = try await client.request(
+                SplatScene.self,
                 path: "/v1/scenes/\(sceneId)",
                 method: "GET"
             )

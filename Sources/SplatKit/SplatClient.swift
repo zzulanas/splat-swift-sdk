@@ -178,7 +178,7 @@ public final class SplatClient: Sendable {
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
         enableLOD: Bool = false
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         let body = ProcessSceneBody(
             enableLod: enableLOD ? true : nil,
             arkitPoses: arkitPoses,
@@ -186,7 +186,7 @@ public final class SplatClient: Sendable {
         )
 
         // The process endpoint returns { status, sceneId, message }
-        // but we want to return a full Scene, so we fetch it after triggering
+        // but we want to return a full SplatScene, so we fetch it after triggering
         let _: ProcessSceneData = try await api.request(
             ProcessSceneData.self,
             path: "/v1/scenes/\(id)/process",
@@ -207,8 +207,8 @@ public final class SplatClient: Sendable {
     /// - Parameter id: The scene ID.
     /// - Returns: The scene with current status.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    public func getScene(id: String) async throws -> Scene {
-        try await api.request(Scene.self, path: "/v1/scenes/\(id)", method: "GET")
+    public func getScene(id: String) async throws -> SplatScene {
+        try await api.request(SplatScene.self, path: "/v1/scenes/\(id)", method: "GET")
     }
 
     // MARK: - List Scenes
@@ -219,8 +219,8 @@ public final class SplatClient: Sendable {
     ///
     /// - Returns: Array of all scenes.
     /// - Throws: ``SplatError`` on network or API errors.
-    public func listScenes() async throws -> [Scene] {
-        try await api.requestArray(Scene.self, path: "/v1/scenes", method: "GET")
+    public func listScenes() async throws -> [SplatScene] {
+        try await api.requestArray(SplatScene.self, path: "/v1/scenes", method: "GET")
     }
 
     // MARK: - Delete Scene
@@ -273,7 +273,7 @@ public final class SplatClient: Sendable {
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         // 1. Create scene
         let (sceneId, uploadURL) = try await createScene(title: title, preset: preset)
 

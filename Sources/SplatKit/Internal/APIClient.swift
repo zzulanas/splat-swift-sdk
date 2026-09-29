@@ -107,7 +107,7 @@ final class APIClient: Sendable {
         self.session = session
 
         let decoder = JSONDecoder()
-        // Note: we do NOT use .convertFromSnakeCase here because Scene and other
+        // Note: we do NOT use .convertFromSnakeCase here because SplatScene and other
         // models define explicit CodingKeys with the exact JSON key strings.
         // Using both would cause a double-conversion mismatch.
 
