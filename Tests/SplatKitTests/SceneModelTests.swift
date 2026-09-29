@@ -45,7 +45,7 @@ extension SplatClientTests {
 
         XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/server-url")
         XCTAssertEqual(scene.downloadURL?.absoluteString, "https://api.splat-3d.com/v1/scenes/server-url/download")
-        XCTAssertEqual(scene.format, "sog")
+        XCTAssertEqual(scene.format, .sog)
     }
 
     func testFallbackViewerURLUsesTourRoute() async throws {

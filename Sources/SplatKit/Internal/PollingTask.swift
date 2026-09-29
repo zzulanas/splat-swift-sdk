@@ -51,8 +51,8 @@ final class PollingTask: Sendable {
 
             let scene: SplatScene = try await client.request(
                 SplatScene.self,
-                path: "/v1/scenes/\(sceneId)",
-                method: "GET"
+                path: APIPath.scene(sceneId),
+                method: .get
             )
 
             // Report progress

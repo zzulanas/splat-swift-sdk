@@ -6,12 +6,74 @@ import XCTest
 /// A URLProtocol subclass that intercepts all requests and returns mock responses.
 final class MockURLProtocol: URLProtocol {
 
+    /// A canned HTTP response.
+    struct Stub {
+        let statusCode: Int
+        let body: Data
+        let headers: [String: String]
+
+        /// A JSON response, optionally with extra headers such as `X-Request-Id`.
+        static func json(_ statusCode: Int, _ body: String, headers: [String: String] = [:]) -> Stub {
+            Stub(
+                statusCode: statusCode,
+                body: Data(body.utf8),
+                headers: headers.merging(["Content-Type": "application/json"]) { current, _ in current }
+            )
+        }
+    }
+
     /// Map of URL path -> (statusCode, responseData)
     /// Set this before running each test.
     static var mockResponses: [String: (Int, Data)] = [:]
 
+    /// Map of URL path -> responses served in order; the last one repeats.
+    /// Checked before `mockResponses`.
+    static var stubSequences: [String: [Stub]] = [:]
+
     /// Captured requests for assertion.
     static var capturedRequests: [URLRequest] = []
+
+    /// Guards the static state: URLSession calls in on its own threads.
+    private static let lock = NSLock()
+
+    /// Serve `stubs` for `path`, one per request, repeating the last.
+    static func stub(_ path: String, _ stubs: Stub...) {
+        lock.lock()
+        defer { lock.unlock() }
+        stubSequences[path] = stubs
+    }
+
+    /// Requests made to `path` so far.
+    static func requests(to path: String) -> [URLRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedRequests.filter { $0.url?.path == path }
+    }
+
+    /// The next response for `path`, or `nil` to fall back to the default 404.
+    private static func nextStub(for path: String) -> Stub? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if var sequence = stubSequences[path], let first = sequence.first {
+            if sequence.count > 1 {
+                sequence.removeFirst()
+                stubSequences[path] = sequence
+            }
+            return first
+        }
+
+        guard let (statusCode, data) = mockResponses[path] else {
+            return nil
+        }
+        return Stub(statusCode: statusCode, body: data, headers: ["Content-Type": "application/json"])
+    }
+
+    private static func capture(_ request: URLRequest) {
+        lock.lock()
+        defer { lock.unlock() }
+        capturedRequests.append(request)
+    }
 
     override class func canInit(with request: URLRequest) -> Bool {
         true
@@ -37,19 +99,19 @@ final class MockURLProtocol: URLProtocol {
             stream.close()
             capturedRequest.httpBody = data
         }
-        Self.capturedRequests.append(capturedRequest)
+        Self.capture(capturedRequest)
 
         let path = request.url?.path ?? ""
 
-        if let (statusCode, data) = Self.mockResponses[path] {
+        if let stub = Self.nextStub(for: path) {
             let response = HTTPURLResponse(
                 url: request.url!,
-                statusCode: statusCode,
+                statusCode: stub.statusCode,
                 httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
+                headerFields: stub.headers
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocol(self, didLoad: stub.body)
         } else {
             // Default: 404
             let response = HTTPURLResponse(
@@ -72,7 +134,10 @@ final class MockURLProtocol: URLProtocol {
 
     /// Reset all mock state between tests.
     static func reset() {
+        lock.lock()
+        defer { lock.unlock() }
         mockResponses = [:]
+        stubSequences = [:]
         capturedRequests = []
     }
 }
@@ -209,8 +274,10 @@ final class SplatClientTests: XCTestCase {
                 height: 1440
             ),
         ]
+        // The route needs at least 5 poses; pad with later frames.
+        let padded = poses + (1..<5).map(makePose)
 
-        let scene = try await client.processScene(id: "abc123", arkitPoses: poses)
+        let scene = try await client.processScene(id: "abc123", arkitPoses: padded)
 
         XCTAssertEqual(scene.id, "abc123")
         XCTAssertEqual(scene.status, .processing)
@@ -227,7 +294,7 @@ final class SplatClientTests: XCTestCase {
 
             // Should have arkit_poses array
             let arkitPoses = json?["arkit_poses"] as? [[String: Any]]
-            XCTAssertEqual(arkitPoses?.count, 1)
+            XCTAssertEqual(arkitPoses?.count, 5)
             XCTAssertEqual(arkitPoses?.first?["timestamp"] as? Double, 1.234)
             XCTAssertEqual(arkitPoses?.first?["file_path"] as? String, "frame_000000.jpg")
             XCTAssertEqual(arkitPoses?.first?["width"] as? Int, 1920)
@@ -331,6 +398,9 @@ final class SplatClientTests: XCTestCase {
 
     // MARK: - listScenes
 
+    /// Covers the deprecated first-page call; deprecated itself so the call
+    /// compiles without a warning.
+    @available(*, deprecated)
     func testListScenesReturnsArray() async throws {
         let json = """
         {
@@ -397,11 +467,12 @@ final class SplatClientTests: XCTestCase {
         let client = makeClient()
 
         do {
-            _ = try await client.listScenes()
+            _ = try await client.listScenePage()
             XCTFail("Should have thrown unauthorized")
         } catch let error as SplatError {
-            if case .unauthorized = error {
-                // Expected
+            if case .unauthorized(let apiError) = error {
+                XCTAssertEqual(apiError.code, "unauthorized")
+                XCTAssertEqual(apiError.requestID, "req-err")
             } else {
                 XCTFail("Expected .unauthorized, got \(error)")
             }
@@ -423,8 +494,8 @@ final class SplatClientTests: XCTestCase {
             _ = try await client.getScene(id: "nonexistent")
             XCTFail("Should have thrown notFound")
         } catch let error as SplatError {
-            if case .notFound(let message) = error {
-                XCTAssertEqual(message, "Scene not found.")
+            if case .notFound(let apiError) = error {
+                XCTAssertEqual(apiError.message, "Scene not found.")
             } else {
                 XCTFail("Expected .notFound, got \(error)")
             }
@@ -443,7 +514,7 @@ final class SplatClientTests: XCTestCase {
         let client = makeClient()
 
         do {
-            _ = try await client.listScenes()
+            _ = try await client.listScenePage()
             XCTFail("Should have thrown rateLimited")
         } catch let error as SplatError {
             if case .rateLimited = error {
@@ -466,14 +537,14 @@ final class SplatClientTests: XCTestCase {
         let client = makeClient()
 
         do {
-            _ = try await client.listScenes()
-            XCTFail("Should have thrown serverError")
+            _ = try await client.listScenePage()
+            XCTFail("Should have thrown requestFailed")
         } catch let error as SplatError {
-            if case .serverError(let code, let message) = error {
-                XCTAssertEqual(code, 500)
-                XCTAssertEqual(message, "Something went wrong.")
+            if case .requestFailed(let apiError) = error {
+                XCTAssertEqual(apiError.statusCode, 500)
+                XCTAssertEqual(apiError.message, "Something went wrong.")
             } else {
-                XCTFail("Expected .serverError, got \(error)")
+                XCTFail("Expected .requestFailed, got \(error)")
             }
         }
     }
@@ -503,7 +574,7 @@ final class SplatClientTests: XCTestCase {
         MockURLProtocol.mockResponses["/v1/scenes"] = (200, mockJSON(json))
 
         let client = makeClient()
-        _ = try await client.listScenes()
+        _ = try await client.listScenePage()
 
         let captured = MockURLProtocol.capturedRequests.first
         XCTAssertEqual(captured?.value(forHTTPHeaderField: "Authorization"), "Bearer s3d_test_key_12345")

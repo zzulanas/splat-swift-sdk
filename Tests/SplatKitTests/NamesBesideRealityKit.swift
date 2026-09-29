@@ -12,7 +12,8 @@ private typealias RealityKitScene = Scene
 
 /// Every public SplatKit type, unqualified.
 private typealias PublicTypes = (
-    SplatClient, SplatError, SplatScene, SceneStatus,
-    ScenePreset, SceneParams, ARKitPose, CaptureResult
+    ARKitPose, CaptureResult, ModelFormat, ScenePage, SceneParams,
+    ScenePreset, SceneSequence, SceneStatus, SceneUpdate, SplatClient,
+    SplatError, SplatScene, Usage
 )
 #endif
