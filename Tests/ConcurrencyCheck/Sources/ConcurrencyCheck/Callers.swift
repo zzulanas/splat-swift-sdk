@@ -63,7 +63,7 @@ final class ScanModel {
         do {
             _ = try await client.createAndProcess(videoURL: videoFileURL)
         } catch SplatError.interrupted(let interruption) where interruption.underlying is CancellationError {
-            print("Cancelled; scene \(interruption.sceneID) continues on the server")
+            print("Cancelled; resume scene \(interruption.sceneID) later")
         } catch SplatError.interrupted(let interruption) {
             _ = try await client.resume(interruption) { status, _ in
                 self.status = status.rawValue

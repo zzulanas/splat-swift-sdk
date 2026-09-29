@@ -51,18 +51,21 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - SplatKit needs Swift 5.10 (Xcode 15.3): `SplatScanner` uses
   `nonisolated(unsafe)`. The manifest's tools version says so.
 - Once `createAndProcess` has created the scene, a failure that leaves the
-  outcome open (network errors, API errors while launching, a timeout,
-  cancellation) is thrown as `SplatError.interrupted(Interruption)`. Continue
-  it with `resume(_:)`. Settled outcomes are thrown as themselves:
-  `.processingFailed`, `.cancelled`, and the error of a launch the API failed
-  and refunded. **Around `createAndProcess`, these catches still compile but
-  stop matching errors that happen after the scene exists:**
+  outcome open (network errors, a timeout, cancellation, a launch refused for
+  want of credits) is thrown as `SplatError.interrupted(Interruption)`.
+  Continue it with `resume(_:)`. Errors no resume can get past are thrown as
+  themselves: `.processingFailed` (the scene failed, including a launch the
+  API failed), `.cancelled`, `.notFound` (the scene was deleted), and
+  `.requestFailed` when storage refuses the upload URL or the API refuses the
+  launch request itself (400). **Around `createAndProcess`, these catches
+  still compile but no longer see the errors `.interrupted` carries:**
   - `catch is CancellationError`: a cancelled task arrives as `.interrupted`
     with `underlying` `CancellationError`. SwiftUI `.task` code that ignores
     cancellation should match
     `SplatError.interrupted(let i) where i.underlying is CancellationError`.
     Cancelled while the scene is still being created, it is a plain
-    `CancellationError` (there is no scene yet).
+    `CancellationError`, and the API may have created the scene anyway:
+    `allScenes` lists it.
   - `catch let error as URLError`, including `URLError.cancelled`.
   - `catch SplatError.uploadFailed`, `.unauthorized`, `.notFound`,
     `.rateLimited`, `.requestFailed`, `.decodingError` and `.timeout`.
@@ -71,10 +74,18 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   `.notStarted`.
 - Progress callbacks (`onProgress` on `createAndProcess`, `waitForScene` and
   `resume`) are `@MainActor @Sendable` and **run on the main actor**; before,
-  they ran on the concurrency pool. A closure literal compiles as before, now
-  also from main-actor code in Swift 6, where it didn't. A stored closure that
-  isn't `@Sendable` no longer converts, and slow work in the callback now
-  blocks the main thread.
+  they ran on the concurrency pool. What breaks:
+  - A callback written in an actor that uses the actor's state **no longer
+    compiles**, in Swift 5 mode too, since it runs on the main actor, not the
+    actor's. Hop back explicitly, e.g. `Task { await self.record(pct) }`.
+  - Code that blocks the main thread until the call returns, such as a
+    command-line tool waiting on a `DispatchSemaphore`, **hangs at the first
+    callback**. Await the call instead, e.g. from an `async` `main`.
+  - A stored closure that isn't `@Sendable` converts with a warning in Swift 5
+    mode, and is an error in Swift 6 mode.
+  - Slow work in the callback blocks the main thread.
+  A closure literal written in main-actor code compiles as before, and now
+  also in Swift 6 mode, where it didn't.
 - A cancelled task throws `CancellationError` from every call. It used to
   surface as `URLError.cancelled` from a request, or as
   `.uploadFailed(URLError.cancelled)` from an upload, so
@@ -106,10 +117,10 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - `SplatClient.Configuration` (`requestTimeout`, `pollingInterval`,
   `pollingTimeout`, `maxRetries`) and `init(apiKey:baseURL:session:configuration:)`.
 - `resume(_:onProgress:)` continues an interrupted `createAndProcess` without
-  paying again. It reads the scene, uploads again only if the upload failed,
-  and launches only if nothing was launched, with the identical request (the
-  API hashes `enable_lod` and `lidar_points`, so a hand-rebuilt launch could
-  409 or drop them).
+  paying again. It launches with the identical request (the API hashes
+  `enable_lod` and `lidar_points`, so a hand-rebuilt launch could 409 or drop
+  them), which the API replays if the launch went through, and uploads again
+  only if the API answers that the upload never arrived.
 - `resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)` continues a
   scene after an app restart, from its saved ID and the same preset and
   capture, rebuilding the same request.
@@ -117,10 +128,13 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   exists, before anything is charged, so an app killed mid-wait can resume it.
 - `waitForScene(id:onProgress:)` to pick up a launched scene. It keeps polling
   through network failures, 5xx and rate limits until its deadline; once it
-  has read the scene, it also rides out up to 3 polls of 401 or 404, which the
-  API returns when its database blips. After the deadline it looks once more.
+  has read the scene, it also rides out 401 and 404 for five minutes, which
+  the API returns when its database blips. After the deadline it looks once
+  more, and again if that look fails.
 - `SplatError.Interruption` (with `Phase`), `SplatError.notStarted`, and
-  public initializers for `SceneLaunch` and `Interruption`.
+  public initializers for `SceneLaunch` and `Interruption`. Printing an
+  interruption shows its scene, phase, key and cause, never the presigned
+  upload URL or the capture.
 - `updateScene(id:_:)` with `SceneUpdate`, `retrainScene(id:preset:)`,
   `cancelScene(id:)`, `downloadScene(id:format:)` with `ModelFormat`,
   `getSceneThumbnail(id:)`, and `getUsage()` with `Usage`. The SDK now covers
