@@ -157,9 +157,10 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
     /// Error message when processing failed, or `nil` if no error.
     public let processingError: String?
 
-    /// Viewer URL for the scene on splat-3d.com.
-    /// Decoded from the server response; falls back to a locally-constructed URL for
-    /// backwards compatibility with older API responses.
+    /// Viewer URL for the scene on splat-3d.com, as the server sends it:
+    /// `nil` when it has no model to show, even for a complete scene.
+    /// A response without the field (a list item, or an older server) gets
+    /// the `/tour/` link for a complete scene.
     public let viewerURL: URL?
 
     /// API URL for the scene's 3D model, once processing is complete.
@@ -240,9 +241,15 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
             thumbnailURL = nil
         }
 
-        // Prefer server-provided viewer URL; fall back to local construction for backwards compat
-        let serverViewerURL = try container.decodeIfPresent(URL.self, forKey: .viewerURLKey)
-        viewerURL = serverViewerURL ?? SplatScene.fallbackViewerURL(id: id, status: status)
+        // A viewer_url the response carries is the server's answer, null
+        // included: there is no model to show. Only a response without the
+        // key (list items, and servers from before viewer_url) gets a link
+        // built here.
+        if container.contains(.viewerURLKey) {
+            viewerURL = try container.decodeIfPresent(URL.self, forKey: .viewerURLKey)
+        } else {
+            viewerURL = SplatScene.fallbackViewerURL(id: id, status: status)
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -257,7 +264,8 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
         try container.encodeIfPresent(numGaussians, forKey: .numGaussians)
         try container.encodeIfPresent(thumbnailR2Key, forKey: .thumbnailR2Key)
         try container.encodeIfPresent(processingError, forKey: .processingError)
-        try container.encodeIfPresent(viewerURL, forKey: .viewerURLKey)
+        // Written even when nil, so decoding it again doesn't build a link.
+        try container.encode(viewerURL, forKey: .viewerURLKey)
         try container.encodeIfPresent(downloadURL, forKey: .downloadURL)
         try container.encodeIfPresent(format, forKey: .format)
         try container.encode(createdAt, forKey: .createdAt)
@@ -340,7 +348,8 @@ extension SplatScene {
     /// retired and now returns 404.
     private static let viewerBase = "https://splat-3d.com/tour/"
 
-    /// Viewer link for responses that predate the server's `viewer_url`.
+    /// Viewer link for responses without `viewer_url`: list items, and
+    /// servers from before it.
     private static func fallbackViewerURL(id: String, status: SceneStatus) -> URL? {
         guard status == .complete else {
             return nil
