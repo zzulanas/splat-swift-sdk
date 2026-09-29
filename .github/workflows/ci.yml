@@ -22,6 +22,14 @@ jobs:
       - name: Package tests
         run: swift test
 
+      # Data-race safety is an error in Swift 6 language mode.
+      - name: Library in Swift 6 mode
+        run: swift build -Xswiftc -swift-version -Xswiftc 6
+
+      # The README's call sites, written from the main actor in Swift 6.
+      - name: Swift 6 callers
+        run: swift build --package-path Tests/ConcurrencyCheck
+
       # Unsigned simulator build: proves the example compiles against this
       # revision of the package without any signing identity.
       - name: Example app
