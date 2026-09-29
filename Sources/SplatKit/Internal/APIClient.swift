@@ -405,9 +405,11 @@ enum HTTPMethod: String {
 /// HTTP status codes the client branches on (RFC 9110 §15).
 enum HTTPStatus {
     static let success = 200...299
+    static let badRequest = 400
     static let unauthorized = 401
     static let notFound = 404
     static let tooManyRequests = 429
+    static let clientError = 400...499
     static let serverError = 500...599
 }
 

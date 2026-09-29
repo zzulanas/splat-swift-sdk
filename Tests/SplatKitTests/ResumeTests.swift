@@ -220,14 +220,14 @@ extension SplatClientTests {
         XCTAssertEqual((body["lidar_points"] as? [[Double]])?.count, 2)
     }
 
-    func testResumeWaitsWhenTheLaunchWentThrough() async throws {
-        // The API claimed and charged the launch, but the response was lost:
-        // the scene is already processing, so resume must not launch again.
+    func testResumeWaitsForASceneLaunchedElsewhere() async throws {
+        // The web app launched the scene and kept no launch the API could
+        // replay, so resume's launch gets a 409. The scene is running: wait.
         stubCreateAndUpload()
-        MockURLProtocol.stub(processPath, .failure(.networkConnectionLost))
+        MockURLProtocol.stub(processPath, .failure(.networkConnectionLost), .json(409, Fixture.alreadyProcessing))
         MockURLProtocol.stub(
             Fixture.scenePath,
-            .json(200, Fixture.trainingScene),
+            .json(500, Fixture.internalError),
             .json(200, Fixture.trainingScene),
             .json(200, Fixture.completeScene)
         )
@@ -237,29 +237,94 @@ extension SplatClientTests {
         let scene = try await client.resume(interruption)
 
         XCTAssertEqual(scene.status, .complete)
+        XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 2)
+    }
+
+    /// createAndProcess, stopped by a lost upload response.
+    private func interruptedUpload(_ client: SplatClient) async throws -> SplatError.Interruption {
+        let error = await expectSplatError { try await client.createAndProcess(videoURL: try self.makeVideo()) }
+        let interruption = try XCTUnwrap(interruption(error))
+        XCTAssertEqual(interruption.phase, .upload)
+        return interruption
+    }
+
+    func testResumeLaunchesBeforeUploadingAgain() async throws {
+        // The upload landed but its response was lost. Launching is free to
+        // try, since the API checks the source before charging, so the file
+        // isn't sent twice.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub("/upload", .failure(.networkConnectionLost))
+        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .json(200, Fixture.completeScene))
+        let client = makeClient(configuration: patientPolling)
+
+        let interruption = try await interruptedUpload(client)
+        let scene = try await client.resume(interruption)
+
+        XCTAssertEqual(scene.status, .complete)
+        XCTAssertEqual(MockURLProtocol.requests(to: "/upload").count, 1)
         XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 1)
     }
 
-    func testResumeUploadsAgainAfterAFailedUpload() async throws {
+    func testResumeUploadsAgainWhenTheSourceIsMissing() async throws {
+        // The upload never landed: the launch says so, before charging, and
+        // resume sends the file to the same presigned URL, then launches.
         MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
         MockURLProtocol.stub(
             "/upload",
             .failure(.networkConnectionLost),
             MockURLProtocol.Stub(statusCode: 200, body: Data(), headers: [:])
         )
-        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing), .json(200, Fixture.processAccepted))
         MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene), .json(200, Fixture.completeScene))
         let client = makeClient(configuration: patientPolling)
 
-        let error = await expectSplatError { try await client.createAndProcess(videoURL: try self.makeVideo()) }
-        let interruption = try XCTUnwrap(interruption(error))
-        XCTAssertEqual(interruption.phase, .upload)
+        let interruption = try await interruptedUpload(client)
         let scene = try await client.resume(interruption)
 
         XCTAssertEqual(scene.status, .complete)
-        // Same scene, same presigned URL: no second scene creation.
         XCTAssertEqual(MockURLProtocol.requests(to: "/upload").count, 2)
+        XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 2)
+        // Same scene, same presigned URL: no second scene creation.
         XCTAssertEqual(MockURLProtocol.requests(to: "/v1/scenes").count, 1)
+    }
+
+    func testAMissingSourceRightAfterTheUploadIsFinal() async throws {
+        // The upload was accepted, yet the launch finds no source. Sending
+        // the same file again would meet the same answer on every resume.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .requestFailed(let refusal) = error else {
+            return XCTFail("Expected the launch's refusal, got \(String(describing: error))")
+        }
+        XCTAssertEqual(refusal.statusCode, 400)
+        XCTAssertEqual(MockURLProtocol.requests(to: "/upload").count, 1)
+    }
+
+    func testAnExpiredUploadURLIsFinal() async throws {
+        // The upload never landed, and its presigned URL expired (after an
+        // hour) before resume ran: no resume can upload to this scene.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub(
+            "/upload",
+            .failure(.networkConnectionLost),
+            MockURLProtocol.Stub(statusCode: 403, body: Data(), headers: [:])
+        )
+        MockURLProtocol.stub(processPath, .json(400, Fixture.sourceMissing))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
+        let client = makeClient(configuration: patientPolling)
+
+        let interruption = try await interruptedUpload(client)
+        let error = await expectSplatError { try await client.resume(interruption) }
+
+        guard case .requestFailed(let refusal) = error else {
+            return XCTFail("Expected the storage's refusal, got \(String(describing: error))")
+        }
+        XCTAssertEqual(refusal.statusCode, 403)
     }
 
     func testResumeReportsASettledOutcome() async throws {
@@ -299,6 +364,8 @@ extension SplatClientTests {
     }
 
     func testAFailedResumeCanBeResumed() async throws {
+        // Offline throughout: resume waits out the outage like any wait, and
+        // at its deadline stops with an interruption to resume later.
         MockURLProtocol.stub(Fixture.scenePath, .failure(.notConnectedToInternet))
         let interruption = SplatError.Interruption(
             sceneID: Fixture.sceneID,
@@ -307,13 +374,15 @@ extension SplatClientTests {
             underlying: SplatError.timeout
         )
         var configuration = SplatClient.Configuration()
-        configuration.maxRetries = 0
+        configuration.pollingTimeout = 60
 
         let error = await expectSplatError { try await self.makeClient(configuration: configuration).resume(interruption) }
 
         let again = try XCTUnwrap(self.interruption(error))
         XCTAssertEqual(again.phase, .wait)
-        XCTAssertEqual((again.underlying as? URLError)?.code, .notConnectedToInternet)
+        guard case .timeout = again.underlying as? SplatError else {
+            return XCTFail("Expected .timeout, got \(again.underlying)")
+        }
     }
 
     // MARK: - Scene ID before the charge
@@ -377,8 +446,41 @@ extension SplatClientTests {
         guard case .notFound = error else {
             return XCTFail("Expected .notFound, got \(String(describing: error))")
         }
-        // One success, three tolerated misses, and the fourth ends the wait.
-        XCTAssertEqual(MockURLProtocol.requests(to: Fixture.scenePath).count, 5)
+        // Tolerated for five minutes after the scene was last read.
+        XCTAssertEqual(clock.sleeps.reduce(0, +), 5 * 60)
+    }
+
+    func testLongPollingIntervalsStillTolerateAFewRejections() async throws {
+        // Polling every 10 minutes, one poll outlasts the window: the first
+        // few rejections are still taken as blips.
+        var configuration = SplatClient.Configuration()
+        configuration.pollingInterval = 10 * 60
+        MockURLProtocol.stub(
+            Fixture.scenePath,
+            .json(200, Fixture.trainingScene),
+            .json(404, Fixture.sceneNotFound),
+            .json(404, Fixture.sceneNotFound),
+            .json(200, Fixture.completeScene)
+        )
+
+        let scene = try await makeClient(configuration: configuration).waitForScene(id: Fixture.sceneID)
+
+        XCTAssertEqual(scene.status, .complete)
+    }
+
+    func testRejectionsAreToleratedForAWindowNotAPollCount() async throws {
+        // Polling every 2 seconds, three rejections take 6: far shorter than
+        // a database incident.
+        var configuration = SplatClient.Configuration()
+        configuration.pollingInterval = 2
+        let outage: [MockURLProtocol.Stub] = Array(repeating: .json(404, Fixture.sceneNotFound), count: 60)
+        MockURLProtocol.stubSequences[Fixture.scenePath] = [.json(200, Fixture.trainingScene)]
+            + outage
+            + [.json(200, Fixture.completeScene)]
+
+        let scene = try await makeClient(configuration: configuration).waitForScene(id: Fixture.sceneID)
+
+        XCTAssertEqual(scene.status, .complete)
     }
 
     func testUploadingMustLastBeforeNotStarted() async throws {
@@ -408,6 +510,36 @@ extension SplatClientTests {
         let scene = try await makeClient(clock: clock).waitForScene(id: Fixture.sceneID)
 
         XCTAssertEqual(scene.status, .complete)
+    }
+
+    func testTheLastLookRidesOutOneFailedRead() async throws {
+        // A device waking after the deadline often fails its first request,
+        // before the radio is back.
+        let clock = FakeClock()
+        clock.advanceOnNextSleep(by: 4 * 60 * 60)
+        MockURLProtocol.stub(
+            Fixture.scenePath,
+            .json(200, Fixture.trainingScene),
+            .failure(.networkConnectionLost),
+            .json(200, Fixture.completeScene)
+        )
+
+        let scene = try await makeClient(clock: clock).waitForScene(id: Fixture.sceneID)
+
+        XCTAssertEqual(scene.status, .complete)
+    }
+
+    func testTheLastLookGivesUpOnASecondFailedRead() async throws {
+        let clock = FakeClock()
+        clock.advanceOnNextSleep(by: 4 * 60 * 60)
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .failure(.networkConnectionLost))
+
+        let error = await expectSplatError { try await self.makeClient(clock: clock).waitForScene(id: Fixture.sceneID) }
+
+        guard case .timeout = error else {
+            return XCTFail("Expected .timeout, got \(String(describing: error))")
+        }
+        XCTAssertEqual(MockURLProtocol.requests(to: Fixture.scenePath).count, 3)
     }
 
     func testDeadlineShortensTheLastSleep() async throws {
@@ -453,11 +585,143 @@ extension SplatClientTests {
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
-        guard case .requestFailed(let apiError) = error else {
-            return XCTFail("Expected the launch's own error, got \(String(describing: error))")
+        guard case .processingFailed(let message) = error else {
+            return XCTFail("Expected .processingFailed, got \(String(describing: error))")
         }
-        XCTAssertEqual(apiError.code, "upstream_error")
+        XCTAssertEqual(message, "Modal rejected the launch (401).")
         XCTAssertEqual(MockURLProtocol.requests(to: processPath).count, 1)
+    }
+
+    func testAStoredLaunchFailureIsFinalWhenTheSceneCantBeRead() async throws {
+        // upstream_error is the API's stored verdict on this launch, final
+        // even when the read that would confirm it fails.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(502, Fixture.launchRejected))
+        MockURLProtocol.stub(Fixture.scenePath, .json(500, Fixture.internalError))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .processingFailed(let message) = error else {
+            return XCTFail("Expected .processingFailed, got \(String(describing: error))")
+        }
+        XCTAssertEqual(message, "Modal rejected the launch (401).")
+    }
+
+    func testAFailedSceneBehindALostLaunchIsFinal() async throws {
+        // The API claimed the launch and failed it, but every response was
+        // lost. The caller gets the scene's outcome, not a bare URLError
+        // without a scene ID.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .failure(.networkConnectionLost))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.failedLaunchScene))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .processingFailed(let message) = error else {
+            return XCTFail("Expected .processingFailed, got \(String(describing: error))")
+        }
+        XCTAssertEqual(message, "Modal rejected the launch (401).")
+    }
+
+    func testACancelledSceneIsACancellationNotAConflict() async throws {
+        // Cancelled while its video uploaded: the launch finds a scene that
+        // is no longer uploading (409), but what happened is the cancel.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(409, Fixture.alreadyProcessing))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.cancelledScene))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .cancelled = error else {
+            return XCTFail("Expected .cancelled, got \(String(describing: error))")
+        }
+    }
+
+    func testALostLaunchResponseKeepsWaiting() async throws {
+        // The API claimed the launch but its response was lost. The scene is
+        // processing, so the job runs and the wait goes on.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .failure(.networkConnectionLost))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .json(200, Fixture.completeScene))
+
+        let scene = try await makeClient().createAndProcess(videoURL: try makeVideo())
+
+        XCTAssertEqual(scene.status, .complete)
+    }
+
+    func testALaunchRefusedForGoodIsFinal() async throws {
+        // The API refuses this exact request (400) before charging, and
+        // would refuse it again on every resume.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(400, Fixture.duplicatePosePaths))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .requestFailed(let refusal) = error else {
+            return XCTFail("Expected the launch's refusal, got \(String(describing: error))")
+        }
+        XCTAssertEqual(refusal.statusCode, 400)
+    }
+
+    func testAStorageRefusalIsFinal() async throws {
+        // The storage refused the presigned upload URL: no resume can upload
+        // to this scene, so there is nothing to continue.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 403, body: Data(), headers: [:]))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .requestFailed(let refusal) = error else {
+            return XCTFail("Expected the storage's refusal, got \(String(describing: error))")
+        }
+        XCTAssertEqual(refusal.statusCode, 403)
+        XCTAssertTrue(MockURLProtocol.requests(to: processPath).isEmpty)
+    }
+
+    func testADeletedSceneEndsTheWait() async throws {
+        // Deleted through the API while createAndProcess waited: the reads
+        // 404 for good, so there is nothing left to resume.
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(200, Fixture.processAccepted))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.trainingScene), .json(404, Fixture.sceneNotFound))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .notFound = error else {
+            return XCTFail("Expected .notFound, got \(String(describing: error))")
+        }
+    }
+
+    func testResumingADeletedSceneIsFinal() async throws {
+        MockURLProtocol.stub(Fixture.scenePath, .json(404, Fixture.sceneNotFound))
+        let interruption = SplatError.Interruption(
+            sceneID: Fixture.sceneID,
+            phase: .wait,
+            idempotencyKey: "process-\(Fixture.sceneID)",
+            underlying: SplatError.timeout
+        )
+
+        let error = await expectSplatError { try await self.makeClient().resume(interruption) }
+
+        guard case .notFound = error else {
+            return XCTFail("Expected .notFound, got \(String(describing: error))")
+        }
+    }
+
+    func testASceneDeletedFromTheDashboardCannotBeLaunched() async throws {
+        // The dashboard only marks a scene deleted: reads still serve it as
+        // uploading, but processScene skips it and answers 404
+        // (api/src/lib/scenes.ts; a failed query there is a 503, not a 404).
+        stubCreateAndUpload()
+        MockURLProtocol.stub(processPath, .json(404, Fixture.sceneNotFound))
+        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.uploadingScene))
+
+        let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
+
+        guard case .notFound = error else {
+            return XCTFail("Expected .notFound, got \(String(describing: error))")
+        }
     }
 
     func testAFailedJobIsFinal() async throws {
@@ -534,6 +798,36 @@ extension SplatClientTests {
             let interruption = try XCTUnwrap(interruption(error))
             XCTAssertTrue(interruption.underlying is CancellationError, "\(interruption.underlying)")
             XCTAssertEqual(interruption.phase, .upload)
+        }
+    }
+
+    // MARK: - Logging an interruption
+
+    func testAnInterruptionPrintsNeitherItsUploadURLNorItsCapture() async throws {
+        // Apps log errors with "\(error)". The presigned upload URL can write
+        // the scene's source for an hour, and a capture runs to megabytes.
+        MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
+        MockURLProtocol.stub("/upload", .failure(.networkConnectionLost))
+
+        let error = await expectSplatError {
+            try await self.makeClient().createAndProcess(
+                videoURL: try self.makeVideo(),
+                preset: .ultra,
+                arkitPoses: (0..<1_000).map(self.makePose)
+            )
+        }
+        let splatError = try XCTUnwrap(error)
+        let interruption = try XCTUnwrap(interruption(error))
+        var dumped = ""
+        dump(splatError, to: &dumped)
+
+        let printed = ["\(splatError)", String(reflecting: splatError), "\(interruption)", String(reflecting: interruption), dumped]
+        for text in printed {
+            let excerpt = String(text.prefix(300))
+            XCTAssertFalse(text.contains("r2.dev/upload"), excerpt)
+            XCTAssertFalse(text.contains("frame_"), excerpt)
+            XCTAssertLessThan(text.count, 2_000, excerpt)
+            XCTAssertTrue(text.contains(Fixture.sceneID), excerpt)
         }
     }
 }

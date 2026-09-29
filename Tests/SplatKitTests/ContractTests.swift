@@ -81,6 +81,11 @@ final class ContractTests: XCTestCase {
             "undeclared data.psnr_holdout",
             "undeclared data.ssim_holdout",
         ]),
+        FixtureCase("cancelledScene", Fixture.cancelledScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
         // listScenes never selects ssim, which the spec's Scene requires.
         FixtureCase("scenePageOne", Fixture.scenePageOne, "listScenes", 200, deviations: ["missing data[].ssim"]),
         FixtureCase("scenePageTwo", Fixture.scenePageTwo, "listScenes", 200, deviations: ["missing data[].ssim"]),
@@ -99,6 +104,9 @@ final class ContractTests: XCTestCase {
         FixtureCase("launchUnconfirmed", Fixture.launchUnconfirmed, "processScene", 503),
         FixtureCase("processQuotaExceeded", Fixture.processQuotaExceeded, "processScene", 429),
         FixtureCase("launchRejected", Fixture.launchRejected, "processScene", 502),
+        FixtureCase("sourceMissing", Fixture.sourceMissing, "processScene", 400),
+        FixtureCase("duplicatePosePaths", Fixture.duplicatePosePaths, "processScene", 400),
+        FixtureCase("alreadyProcessing", Fixture.alreadyProcessing, "processScene", 409),
         FixtureCase("keyLookupFailed", Fixture.keyLookupFailed, "getScene", 401),
         FixtureCase("retrainConflict", Fixture.retrainConflict, "retrainScene", 409),
         FixtureCase("cancelConflict", Fixture.cancelConflict, "cancelScene", 409),
@@ -131,6 +139,7 @@ final class ContractTests: XCTestCase {
         "processScene 503",  // launch not confirmed; "Retry the same request" (processScene)
         "processScene 429",  // monthly processing quota used up (processScene)
         "processScene 502",  // a launch the API failed and refunded (failLaunch)
+        "processScene 400",  // source not in storage, or duplicate pose paths (processScene)
         "getScene 500",      // any unhandled error (errorHandler)
         "listScenes 400",    // `limit` outside 1–100 (route validation)
     ]

@@ -176,6 +176,13 @@ enum Fixture {
         with: "Modal rejected the launch (401)."
     )
 
+    /// GET /v1/scenes/{id} → 200 after cancelScene, which accepts an
+    /// uploading scene and sets status cancelled and processing_error
+    /// "Cancelled by user" (api/src/lib/scenes.ts).
+    static let cancelledScene = uploadingScene
+        .replacingOccurrences(of: "\"status\": \"uploading\"", with: "\"status\": \"cancelled\"")
+        .replacingOccurrences(of: "\"processing_error\": null", with: "\"processing_error\": \"Cancelled by user\"")
+
     /// GET /v1/scenes?limit=2 → 200, first of two pages. Item keys: the column
     /// list listScenes selects; meta: the list route in api/src/routes/scenes.ts
     /// (next_cursor is the last item's created_at). Spec: SceneListResponse.
@@ -438,6 +445,20 @@ enum Fixture {
     /// this error, which every repeat replays (api/src/lib/scenes.ts;
     /// fail_scene_launch in supabase/migrations/20260928120000_atomic_scene_launches.sql).
     static let launchRejected = error("upstream_error", "Modal rejected the launch (401).")
+
+    /// 400 from processScene when the source isn't in storage. It checks
+    /// (a HEAD on the scene's source key) before claiming or charging
+    /// anything (api/src/lib/scenes.ts).
+    static let sourceMissing = error("invalid_input", "Source file not found. Please try uploading again.")
+
+    /// 400 from processScene when two poses name the same frame
+    /// (api/src/lib/scenes.ts), before anything is claimed.
+    static let duplicatePosePaths = error("invalid_input", "Duplicate file_path values in arkit_poses.")
+
+    /// 409 from processScene for a scene that is no longer uploading and has
+    /// no launch of its own, e.g. one cancelled while it uploaded, or one the
+    /// web app launched (api/src/lib/scenes.ts).
+    static let alreadyProcessing = error("conflict", "Scene is already being processed.")
 
     /// 401 when the API-key lookup itself fails, e.g. a database blip:
     /// requireApiKeyAuth answers any lookup error this way (api/src/middleware/auth.ts).

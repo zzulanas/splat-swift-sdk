@@ -320,14 +320,14 @@ extension SplatClientTests {
 
     func testUploadFailureKeepsSceneID() async throws {
         MockURLProtocol.stub("/v1/scenes", .json(201, Fixture.createScene))
-        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 403, body: Data(), headers: [:]))
+        MockURLProtocol.stub("/upload", MockURLProtocol.Stub(statusCode: 503, body: Data(), headers: [:]))
 
         let error = await expectSplatError { try await self.makeClient().createAndProcess(videoURL: try self.makeVideo()) }
 
         let interruption = try XCTUnwrap(interruption(error))
         XCTAssertEqual(interruption.sceneID, Fixture.sceneID)
         XCTAssertEqual(interruption.phase, .upload)
-        XCTAssertEqual(error?.apiError?.statusCode, 403)
+        XCTAssertEqual(error?.apiError?.statusCode, 503)
         XCTAssertTrue(MockURLProtocol.requests(to: "\(Fixture.scenePath)/process").isEmpty)
     }
 

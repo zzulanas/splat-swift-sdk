@@ -30,9 +30,9 @@ enum SceneEvidence {
 ///     │      uploading, twice ─────> throw .notStarted (no job exists)
 ///     │      any other status ─────> wait the interval, poll again
 ///     └─ fails: network, 5xx, 429 ─> no news; wait the interval (or Retry-After)
-///               401 / 404 ─────────> no news for 3 polls once the scene is known
+///               401 / 404 ─────────> no news for 5 minutes once the scene is known
 ///               other 4xx ─────────> throw (the request itself is wrong)
-///   deadline passes ───────────────> one last poll, then throw .timeout
+///   deadline passes ───────────────> one last poll (two if the first fails), then .timeout
 final class PollingTask: Sendable {
 
     /// How often to poll for status updates (in seconds).
@@ -47,10 +47,16 @@ final class PollingTask: Sendable {
     /// URL failures that no amount of waiting fixes: the request can't be made.
     private static let fatalURLErrors: Set<URLError.Code> = [.badURL, .unsupportedURL]
 
-    /// Consecutive 401/404 answers tolerated for a scene already seen. The API
-    /// returns them when its database blips (auth.ts answers a failed key
-    /// lookup with 401; getSceneStatus answers a failed query with 404).
+    /// Consecutive 401/404 answers always tolerated for a scene already seen,
+    /// however long they take. The API returns them when its database blips
+    /// (auth.ts answers a failed key lookup with 401; getSceneStatus answers
+    /// a failed query with 404).
     static let toleratedRejections = 3
+
+    /// How long after the scene was last read a 401 or 404 still counts as
+    /// a blip, however often it polls. After it, a 404 means the scene was
+    /// deleted, which ends `createAndProcess` for good.
+    static let rejectionWindow: TimeInterval = 5 * 60
 
     /// Polls in a row that must find `uploading` before concluding nothing was
     /// launched. The web app charges and dispatches a moment before it marks a
@@ -91,8 +97,10 @@ final class PollingTask: Sendable {
     ) async throws -> SplatScene {
         let deadline = timing.now().addingTimeInterval(timeout)
         var seen = evidence == .exists
+        var lastSeen = timing.now()
         var rejections = 0
         var uploadingSightings = 0
+        var retriedLate = false
 
         while true {
             // Check for task cancellation
@@ -113,7 +121,9 @@ final class PollingTask: Sendable {
                     throw CancellationError()
                 }
                 if Self.isRejection(error) {
-                    guard seen, rejections < Self.toleratedRejections else {
+                    let blip = rejections < Self.toleratedRejections
+                        || timing.now().timeIntervalSince(lastSeen) < Self.rejectionWindow
+                    guard seen, blip else {
                         throw error
                     }
                     rejections += 1
@@ -121,17 +131,26 @@ final class PollingTask: Sendable {
                     throw error
                 }
 
+                // Past the deadline, a failed look gets one more try: a
+                // device waking from sleep often fails its first request.
+                if timing.now() >= deadline {
+                    guard !retriedLate else {
+                        throw SplatError.timeout
+                    }
+                    retriedLate = true
+                    try await timing.sleep(interval)
+                    continue
+                }
+
                 // An outage says nothing about a job that is already paid
                 // for and running: keep waiting, as long as the server asks.
-                guard timing.now() < deadline else {
-                    throw SplatError.timeout
-                }
                 let requested = (error as? SplatError)?.apiError?.retryAfter ?? 0
                 try await sleep(max(interval, requested), until: deadline)
                 continue
             }
 
             seen = true
+            lastSeen = timing.now()
             rejections = 0
 
             // Report progress

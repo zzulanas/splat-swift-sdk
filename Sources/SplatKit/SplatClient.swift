@@ -640,10 +640,18 @@ public final class SplatClient: Sendable {
     /// ```
     ///
     /// Once the scene exists, a failure that leaves the outcome open (network,
-    /// timeout, cancellation) is thrown as ``SplatError/interrupted(_:)``:
-    /// continue with ``resume(_:onProgress:)``, which doesn't pay again. An
-    /// outcome the server settled is thrown as itself: ``SplatError/processingFailed(_:)``,
-    /// ``SplatError/cancelled``, or the error of a launch the API failed for good.
+    /// timeout, cancellation, a launch refused for want of credits) is thrown
+    /// as ``SplatError/interrupted(_:)``: continue with ``resume(_:onProgress:)``,
+    /// which doesn't pay again. Anything else is final, because no resume can
+    /// get past it, so start over with a new scene:
+    /// - ``SplatError/processingFailed(_:)``: the scene failed, including a
+    ///   launch the API failed. The server refunds a failed scene.
+    /// - ``SplatError/cancelled``: the scene was cancelled. The server doesn't
+    ///   refund a job that had started.
+    /// - ``SplatError/notFound(_:)``: the scene was deleted.
+    /// - ``SplatError/requestFailed(_:)`` with a 4xx: storage refused the
+    ///   upload URL (403 once it expires, after an hour), or the API refused
+    ///   the launch request itself (400).
     ///
     /// If the app may be killed while it waits, save the ID `onSceneCreated`
     /// passes. On relaunch, call ``waitForScene(id:onProgress:)``; if it throws
@@ -661,9 +669,11 @@ public final class SplatClient: Sendable {
     ///   - onSceneCreated: Optional callback, on the main actor, with the new
     ///     scene's ID as soon as it exists, before the upload.
     /// - Returns: The completed scene.
-    /// - Throws: The creation error if the scene could not be created, or
-    ///           `CancellationError` if the task was cancelled before it was.
-    ///           Afterwards, ``SplatError/interrupted(_:)`` or a settled outcome.
+    /// - Throws: The creation error if the scene could not be created. If the
+    ///           task is cancelled while the scene is being created, a plain
+    ///           `CancellationError`: the API may have created it anyway, and
+    ///           ``allScenes(pageSize:)`` lists it. Afterwards,
+    ///           ``SplatError/interrupted(_:)`` or a final error, as above.
     public func createAndProcess(
         videoURL: URL,
         title: String? = nil,
@@ -695,16 +705,13 @@ public final class SplatClient: Sendable {
     /// Continue a `createAndProcess` that stopped before its outcome was
     /// known, without paying for another job.
     ///
-    /// It reads the scene first and does only what is missing:
-    /// - complete: returns it.
-    /// - failed or cancelled: throws ``SplatError/processingFailed(_:)`` or
-    ///   ``SplatError/cancelled``. The outcome is settled and anything charged
-    ///   was refunded, so start over with a new scene.
-    /// - still uploading: uploads the same file again if the upload had
-    ///   failed, then launches with exactly the request `createAndProcess`
-    ///   sent (same body, same key), so a launch already on its way is
-    ///   replayed rather than charged twice; then waits.
-    /// - anything else: waits.
+    /// It picks up at the step that stopped, sending exactly the request
+    /// `createAndProcess` sent (same body, same key):
+    /// - upload or launch: launches, then waits. The API replays a launch
+    ///   that went through instead of charging it again, and refuses one
+    ///   whose upload never arrived before charging anything; resume then
+    ///   uploads the same file to the same URL and launches.
+    /// - wait: waits.
     ///
     /// ```swift
     /// do {
@@ -718,37 +725,21 @@ public final class SplatClient: Sendable {
     ///   - interruption: What `createAndProcess` threw.
     ///   - onProgress: Optional callback, on the main actor, for status updates.
     /// - Returns: The completed scene.
-    /// - Throws: ``SplatError/interrupted(_:)`` again if it stops again (resume
-    ///           that one), or a settled outcome as above.
+    /// - Throws: ``SplatError/interrupted(_:)`` again if it stops before the
+    ///           outcome is known (resume that one). Otherwise a final error,
+    ///           as from `createAndProcess`, or ``SplatError/notStarted`` for
+    ///           an interruption made without the original request, whose
+    ///           scene was never launched.
     public func resume(
         _ interruption: SplatError.Interruption,
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
     ) async throws -> SplatScene {
         let run = Run(sceneID: interruption.sceneID, idempotencyKey: interruption.idempotencyKey, request: interruption.request)
 
-        let scene: SplatScene
-        do {
-            scene = try await getScene(id: run.sceneID)
-        } catch {
-            throw SplatError.interrupted(interruption.replacing(underlying: Self.cause(of: error)))
-        }
-
-        switch scene.status {
-        case .complete:
-            return scene
-        case .failed:
-            throw SplatError.processingFailed(scene.failureMessage)
-        case .cancelled:
-            throw SplatError.cancelled
-        case .uploading where interruption.phase != .wait:
-            // Nothing was launched. Upload again only if the upload failed.
-            guard run.request != nil else {
-                throw SplatError.notStarted
-            }
-            return try await proceed(run, from: interruption.phase == .upload ? .upload : .launch, onProgress: onProgress)
-        default:
-            return try await proceed(run, from: .wait, onProgress: onProgress)
-        }
+        // Launching again is free to try, so an interrupted upload or launch
+        // continues with the launch; see deliver(_:for:phase:onProgress:).
+        let start: SplatError.Interruption.Phase = interruption.phase == .wait ? .wait : .launch
+        return try await proceed(run, from: start, onProgress: onProgress)
     }
 
     // MARK: - Upload, Launch, Wait (internal)
@@ -760,15 +751,21 @@ public final class SplatClient: Sendable {
         let request: ResumableRequest?
     }
 
-    /// An outcome the server settled, e.g. a launch it failed and refunded.
-    /// Thrown as the wrapped error, never as `.interrupted`: nothing is left
-    /// to resume.
-    private struct Settled: Error {
-        let error: Error
+    /// An error no resume can get past, e.g. a failed scene. Thrown as the
+    /// wrapped error, never as `.interrupted`.
+    private struct Final: Error {
+        let error: SplatError
     }
 
     /// Upload, launch and wait from `start` on. A failure that leaves the
-    /// outcome open is thrown as `.interrupted`; a settled one as itself.
+    /// outcome open is thrown as `.interrupted`; a final one as itself.
+    ///
+    ///   upload ──> launch ──> wait ──> complete
+    ///     │          │         │
+    ///     │          │         └─ deleted (404), failed, cancelled ──> final
+    ///     │          └─ refused for good (400, 404, upstream_error) ─> final
+    ///     └─ storage refused the URL (4xx, e.g. expired) ────────────> final
+    ///   anything else, e.g. network, timeout, 402 ───────────────────> .interrupted
     private func proceed(
         _ run: Run,
         from start: SplatError.Interruption.Phase,
@@ -777,22 +774,14 @@ public final class SplatClient: Sendable {
         var phase = start
 
         do {
-            if phase == .upload, let request = run.request {
-                await onProgress?(.uploading, 0)
-                try await uploadVideo(from: request.videoURL, to: request.uploadURL)
-                await onProgress?(.uploading, 100)
-                phase = .launch
-            }
-
-            if phase == .launch, let request = run.request {
-                try await settleOrLaunch(run, body: request.launch)
-                phase = .wait
+            if let request = run.request, phase != .wait {
+                try await deliver(request, for: run, phase: &phase, onProgress: onProgress)
             }
 
             return try await poller.poll(sceneId: run.sceneID, using: api, evidence: .exists, onProgress: onProgress)
-        } catch let settled as Settled {
-            throw settled.error
-        } catch let error as SplatError where error.isSettledOutcome {
+        } catch let final as Final {
+            throw final.error
+        } catch let error as SplatError where error.isFinal {
             throw error
         } catch {
             throw SplatError.interrupted(SplatError.Interruption(
@@ -805,21 +794,84 @@ public final class SplatClient: Sendable {
         }
     }
 
-    /// Launch with the recorded body and key. If that fails, the scene says
-    /// whether the API settled it: failed or cancelled means the launch is
-    /// over (and refunded), so it is not worth resuming.
+    /// Upload and launch from `phase` on, moving `phase` along as each step
+    /// lands. From `.upload` the file goes first. From `.launch` the launch
+    /// goes first, and the file only if the API answers that it never
+    /// arrived: the API checks before charging, so trying is free, and a file
+    /// that did arrive isn't sent twice.
+    private func deliver(
+        _ request: ResumableRequest,
+        for run: Run,
+        phase: inout SplatError.Interruption.Phase,
+        onProgress: ProgressHandler?
+    ) async throws {
+        var uploaded = false
+        if phase == .upload {
+            try await upload(request, onProgress: onProgress)
+            uploaded = true
+            phase = .launch
+        }
+
+        do {
+            try await settleOrLaunch(run, body: request.launch)
+        } catch let final as Final where final.error.isMissingSource && !uploaded {
+            phase = .upload
+            try await upload(request, onProgress: onProgress)
+            phase = .launch
+            try await settleOrLaunch(run, body: request.launch)
+        }
+        phase = .wait
+    }
+
+    /// Send the capture to its presigned URL.
+    private func upload(_ request: ResumableRequest, onProgress: ProgressHandler?) async throws {
+        await onProgress?(.uploading, 0)
+        do {
+            try await uploadVideo(from: request.videoURL, to: request.uploadURL)
+        } catch let error as SplatError where error.isStorageRefusal {
+            // The URL itself was refused, e.g. once it expired after an hour:
+            // no resume can upload to this scene.
+            throw Final(error: error)
+        }
+        await onProgress?(.uploading, 100)
+    }
+
+    /// Launch with the recorded body and key. If the launch fails, the scene
+    /// says what happened, and outranks the launch's own error:
+    /// - failed or cancelled: that outcome, final.
+    /// - past uploading: a launch went through (this one, with its response
+    ///   lost, or another client's), so there is nothing to launch: wait.
+    /// - still uploading, or unreadable: the launch's error, final when no
+    ///   repeat of the request can get past it.
     private func settleOrLaunch(_ run: Run, body: ProcessSceneBody) async throws {
+        let launchError: Error
         do {
             _ = try await launch(id: run.sceneID, body: body, idempotencyKey: run.idempotencyKey)
+            return
         } catch {
             if Task.isCancelled {
                 throw CancellationError()
             }
-            if let scene = try? await getScene(id: run.sceneID), scene.status == .failed || scene.status == .cancelled {
-                throw Settled(error: error)
-            }
-            throw error
+            launchError = error
         }
+
+        if let scene = try? await getScene(id: run.sceneID) {
+            switch scene.status {
+            case .failed:
+                throw Final(error: .processingFailed(scene.failureMessage))
+            case .cancelled:
+                throw Final(error: .cancelled)
+            case .uploading:
+                break
+            default:
+                return
+            }
+        }
+
+        if let final = SplatError.ending(launchError) {
+            throw Final(error: final)
+        }
+        throw launchError
     }
 
     /// The error to report: cancellation as Swift reports it, whatever form it took.
@@ -828,17 +880,58 @@ public final class SplatClient: Sendable {
     }
 }
 
-// MARK: - Settled Outcomes
+// MARK: - Final Errors
 
 extension SplatError {
 
-    /// Whether the server settled the scene: there is nothing to resume.
-    var isSettledOutcome: Bool {
+    /// Statuses of a launch refusal that a repeat of the request meets again:
+    /// the request itself is refused (400), or the scene is gone for this key
+    /// (404; processScene answers a failed lookup with 503).
+    private static let finalLaunchStatuses: Set<Int> = [HTTPStatus.badRequest, HTTPStatus.notFound]
+
+    /// Start of processScene's answer when the source isn't in storage
+    /// (api/src/lib/scenes.ts). It carries no code of its own.
+    private static let missingSourceMessage = "Source file not found"
+
+    /// Whether the run is over: nothing is left for a resume to continue.
+    var isFinal: Bool {
         switch self {
-        case .processingFailed, .cancelled:
+        case .processingFailed, .cancelled, .notFound, .notStarted:
             return true
         default:
             return false
         }
+    }
+
+    /// Whether a launch was refused because its upload never arrived. The
+    /// API checks before charging, so uploading again and relaunching is safe.
+    var isMissingSource: Bool {
+        guard let refusal = apiError else {
+            return false
+        }
+        return refusal.statusCode == HTTPStatus.badRequest && refusal.message.hasPrefix(Self.missingSourceMessage)
+    }
+
+    /// Whether storage refused an upload outright: a 4xx that isn't worth
+    /// repeating, e.g. 403 once the presigned URL expires.
+    var isStorageRefusal: Bool {
+        guard case .requestFailed(let refusal) = self else {
+            return false
+        }
+        return HTTPStatus.clientError.contains(refusal.statusCode) && !APIClient.isTransient(self)
+    }
+
+    /// The error that ends a run after a failed launch, or `nil` when a
+    /// resume may still get past it (network, 5xx, 401, 402, 409, 429…).
+    /// A launch the API failed (upstream_error) failed the scene, so it ends
+    /// as ``processingFailed(_:)``, as a read of the scene would.
+    static func ending(_ launchError: Error) -> SplatError? {
+        guard let error = launchError as? SplatError, let refusal = error.apiError else {
+            return nil
+        }
+        if refusal.code == APIClient.launchFailedCode {
+            return .processingFailed(refusal.message)
+        }
+        return finalLaunchStatuses.contains(refusal.statusCode) ? error : nil
     }
 }
