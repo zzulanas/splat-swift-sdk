@@ -216,6 +216,9 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   it creates the scene.
 - Viewer URLs pointed at the retired `splat-3d.com/s/{id}` route, which returns
   404; they now use `/tour/{id}`.
+- A complete scene whose response has `viewer_url: null`, because it has no
+  model to show, got a made-up `/tour/{id}` link. Now `viewerURL` is `nil`;
+  the link is built only for responses without the field, such as list items.
 - `preview_ready` decodes as an in-progress status instead of failing.
 - `SplatScene.isProcessing` is true for every non-terminal status. It was
   false for `estimating_poses` and the `preview_*` stages the pipeline writes.
