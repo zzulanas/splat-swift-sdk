@@ -321,7 +321,7 @@ final class SplatClientTests: XCTestCase {
         XCTAssertTrue(scene.isComplete)
         XCTAssertFalse(scene.isFailed)
         XCTAssertFalse(scene.isProcessing)
-        XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/s/complete-scene")
+        XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/complete-scene")
         XCTAssertNotNil(scene.thumbnailURL)
         XCTAssertEqual(scene.numGaussians, 500000)
         XCTAssertEqual(scene.title, "My Room")

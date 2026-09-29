@@ -458,7 +458,7 @@ final class ScanViewModel: ObservableObject {
                 state = .complete(viewerURL: viewerURL)
             } else {
                 state = .complete(
-                    viewerURL: URL(string: "https://splat-3d.com/s/\(scene.id)")!
+                    viewerURL: URL(string: "https://splat-3d.com/tour/\(scene.id)")!
                 )
             }
         } catch {
