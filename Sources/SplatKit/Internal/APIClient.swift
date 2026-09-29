@@ -36,8 +36,10 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// dropped. An upload rejected with an error status is ``requestFailed(_:)``.
     case uploadFailed(Error)
 
-    /// ``SplatScanner`` could not record. No request was made.
-    case captureFailed(String)
+    /// ``SplatScanner`` could not record, e.g. the device ran out of storage.
+    /// No request was made. The error is the recorder's own when it had one,
+    /// such as an `AVError`.
+    case captureFailed(Error)
 
     /// Processing failed on the server.
     ///
@@ -81,8 +83,8 @@ public enum SplatError: Error, LocalizedError, Sendable {
             return "Failed to decode response: \(error.localizedDescription)"
         case .uploadFailed(let error):
             return "Upload failed: \(error.localizedDescription)"
-        case .captureFailed(let message):
-            return "Capture failed: \(message)"
+        case .captureFailed(let error):
+            return "Capture failed: \(error.localizedDescription)"
         case .processingFailed(let message):
             return "Processing failed: \(message)"
         case .timeout:
@@ -182,6 +184,29 @@ extension SplatError {
             }
             return " Request ID: \(requestID)."
         }
+    }
+}
+
+// MARK: - Printing
+
+extension SplatError.APIError: CustomStringConvertible, CustomDebugStringConvertible {
+
+    /// The message, so `"\(error)"` reads as it did when these cases carried
+    /// a `String` in 0.1.0.
+    public var description: String {
+        message
+    }
+
+    /// Every field, for logs and the debugger.
+    public var debugDescription: String {
+        let fields = [
+            "statusCode: \(statusCode)",
+            "code: \(code ?? "nil")",
+            "message: \(message)",
+            "requestID: \(requestID ?? "nil")",
+            "retryAfter: \(retryAfter.map { "\($0)" } ?? "nil")",
+        ]
+        return "APIError(\(fields.joined(separator: ", ")))"
     }
 }
 
@@ -488,6 +513,7 @@ final class APIClient: Sendable {
                 debugDescription: "Cannot decode date: \(string)"
             )
         }
+        decoder.userInfo[.splatBaseURL] = baseURL
         self.decoder = decoder
 
         let encoder = JSONEncoder()

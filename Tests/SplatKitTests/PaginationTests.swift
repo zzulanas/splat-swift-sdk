@@ -92,3 +92,52 @@ extension SplatClientTests {
         XCTAssertEqual(ids, ["a1b2c3d4e5f6", "0f1e2d3c4b5a"])
     }
 }
+
+// MARK: - Cancellation
+//
+// A cancelled walk must never look like a complete one: code that prunes
+// local scenes missing from the list would delete real ones.
+
+extension SplatClientTests {
+
+    /// Walk every scene inside a task, cancelling it after `cancelAfter` scenes.
+    private func walk(cancelAfter limit: Int) async -> (ids: [String], error: Error?) {
+        let client = makeClient()
+        let task = Task { () -> (ids: [String], error: Error?) in
+            var ids: [String] = []
+            do {
+                if limit == 0 {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                for try await scene in client.allScenes(pageSize: 2) {
+                    ids.append(scene.id)
+                    if ids.count == limit {
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
+                }
+                return (ids, nil)
+            } catch {
+                return (ids, error)
+            }
+        }
+        return await task.value
+    }
+
+    func testCancelledWalkThrowsBeforeTheFirstScene() async throws {
+        MockURLProtocol.stub("/v1/scenes", .json(200, Fixture.scenePageOne), .json(200, Fixture.scenePageTwo))
+
+        let result = await walk(cancelAfter: 0)
+
+        XCTAssertEqual(result.ids, [])
+        XCTAssertTrue(result.error is CancellationError, "\(String(describing: result.error))")
+    }
+
+    func testCancelledWalkThrowsBetweenScenes() async throws {
+        MockURLProtocol.stub("/v1/scenes", .json(200, Fixture.scenePageOne), .json(200, Fixture.scenePageTwo))
+
+        let result = await walk(cancelAfter: 1)
+
+        XCTAssertEqual(result.ids, ["a1b2c3d4e5f6"])
+        XCTAssertTrue(result.error is CancellationError, "\(String(describing: result.error))")
+    }
+}

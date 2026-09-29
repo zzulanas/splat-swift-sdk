@@ -19,10 +19,11 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   - Patterns without bindings, such as `catch SplatError.unauthorized`, still
     compile. Constructing these cases needs a payload:
     `.unauthorized(SplatError.APIError(statusCode: 401, message: "…"))`.
-- `SplatScanner` failures throw the new `.captureFailed(String)`. They were
-  `.serverError(0, …)`, which compiles no more, and a failed video file was
-  `.uploadFailed`, which **still compiles but stops matching** around
-  `scanner.stop()`.
+- `SplatScanner` failures throw the new `.captureFailed(Error)`, carrying the
+  recorder's own error (e.g. an `AVError` when storage runs out) when there is
+  one. They were `.serverError(0, …)`, which compiles no more, and a failed
+  video file was `.uploadFailed`, which **still compiles but stops matching**
+  around `scanner.stop()`.
 - `createScene` returns `(sceneID:uploadURL:)`, matching `sceneID` elsewhere.
   `result.sceneId` no longer compiles; destructuring is unaffected.
 - Requests that never produce an HTTP response now throw `URLError`
@@ -30,11 +31,20 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   An unparseable upload URL from `createScene` throws
   `SplatError.decodingError`.
 - `SceneStatus` is a `RawRepresentable` struct instead of an enum, so the API
-  can add pipeline stages without breaking anyone: `switch`es need a
-  `default`, and `SceneStatus(rawValue:)` no longer returns an optional. It
-  names every status the API reports, including `previewReady`,
-  `estimatingPoses` and the `preview*` stages, and a stage it doesn't name
-  keeps its raw value.
+  can add pipeline stages without another source break. It names every
+  status the API reports, including `previewReady`, `estimatingPoses` and the
+  `preview*` stages, and a stage it doesn't name keeps its raw value. What
+  changes for existing code:
+  - `switch`es need a plain `default`; one with `@unknown default` no longer
+    compiles.
+  - `SceneStatus(rawValue:)` no longer returns an optional.
+  - Interpolating a status (`"\(status)"`) prints its API value,
+    `extracting_frames`, instead of the case name `extractingFrames`. Logs,
+    analytics keys or saved state built that way **still compile but change**.
+  - `allCases` has 15 members in pipeline order instead of 10, and grows when
+    a stage is named, so don't index into it.
+- SplatKit needs Swift 5.10 (Xcode 15.3): `SplatScanner` uses
+  `nonisolated(unsafe)`. The manifest's tools version says so.
 - Once `createAndProcess` has created the scene, every failure is thrown as
   `SplatError.interrupted(Interruption)`, whose `phase` (`upload`, `launch`,
   `wait`), `idempotencyKey` and `underlying` error say how to resume. **Around
@@ -89,7 +99,14 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   `getSceneThumbnail(id:)`, and `getUsage()` with `Usage`. The SDK now covers
   all eleven operations of the public API.
 - `listScenePage(cursor:limit:)` returns one page with `nextCursor` and
-  `hasMore`; `allScenes(pageSize:)` walks every page as an async sequence.
+  `hasMore`; `allScenes(pageSize:)` walks every page as a `SceneSequence`. A
+  cancelled task ends the walk with `CancellationError`, so a finished loop
+  always saw every scene.
+- `ModelFormat`, an open set like `SceneStatus`, for downloads and
+  `Scene.format`. A format the API adds later keeps its name, and a download
+  of it gets that file extension.
+- Public initializers on `ScenePage`, `Usage` and `Usage.Limits` for test
+  doubles.
 - `SplatError.apiError` reads the failed response behind any HTTP error.
   Error descriptions include the request ID.
 - `SceneStatus.isTerminal`.
@@ -121,6 +138,9 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   after its upload.
 - A 429's description is the server's message when it sent one, so a used-up
   quota says so and how to raise it, instead of "Rate limited".
+- Interpolating a `SplatError.APIError` prints its message, as 0.1.0's
+  `String` payload did; `debugDescription` has every field.
+- Thumbnails link to the API the client talks to, not always production.
 - An error response that isn't from the API (an edge proxy's HTML page, or an
   empty or very long body) reads as its HTTP reason phrase, such as
   "Bad Gateway", instead of the raw page.

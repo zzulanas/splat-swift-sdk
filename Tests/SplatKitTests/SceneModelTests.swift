@@ -45,7 +45,7 @@ extension SplatClientTests {
 
         XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/server-url")
         XCTAssertEqual(scene.downloadURL?.absoluteString, "https://api.splat-3d.com/v1/scenes/server-url/download")
-        XCTAssertEqual(scene.format, "sog")
+        XCTAssertEqual(scene.format, .sog)
     }
 
     func testFallbackViewerURLUsesTourRoute() async throws {
@@ -151,5 +151,41 @@ extension SplatClientTests {
         let scene = try await scene(withStatus: "some_future_stage")
 
         XCTAssertTrue(scene.isProcessing)
+    }
+}
+
+// MARK: - Thumbnail URL
+
+extension SplatClientTests {
+
+    func testThumbnailURLUsesTheClientsBaseURL() async throws {
+        // A client pointed at another deployment must not link thumbnails
+        // to production, where that scene ID doesn't exist.
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        let staging = try XCTUnwrap(URL(string: "https://api-staging.example.com"))
+        let client = SplatClient(apiKey: "s3d_test_key_12345", baseURL: staging, session: URLSession(configuration: config))
+        MockURLProtocol.mockResponses["/v1/scenes/thumb"] = (200, mockJSON("""
+        {
+            "data": {
+                "id": "thumb",
+                "title": null,
+                "address": null,
+                "status": "complete",
+                "is_public": false,
+                "processing_stage": null,
+                "processing_pct": 100,
+                "num_gaussians": null,
+                "thumbnail_r2_key": "tours/thumb/thumbnail.png",
+                "created_at": "2026-09-28T12:00:00Z",
+                "updated_at": "2026-09-28T12:00:00Z"
+            },
+            "meta": { "request_id": "req-thumb" }
+        }
+        """))
+
+        let scene = try await client.getScene(id: "thumb")
+
+        XCTAssertEqual(scene.thumbnailURL?.absoluteString, "https://api-staging.example.com/v1/scenes/thumb/thumbnail")
     }
 }

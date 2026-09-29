@@ -16,4 +16,11 @@ public struct ScenePage: Sendable, Equatable {
 
     /// Whether more scenes follow this page.
     public let hasMore: Bool
+
+    /// Create a page, e.g. for a test double.
+    public init(scenes: [Scene], nextCursor: String?, hasMore: Bool) {
+        self.scenes = scenes
+        self.nextCursor = nextCursor
+        self.hasMore = hasMore
+    }
 }

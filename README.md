@@ -5,8 +5,8 @@ Swift SDK for the [Splat](https://splat-3d.com) 3D Gaussian Splatting API. Turn 
 ## Requirements
 
 - iOS 16.0+
-- Swift 5.9+
-- Xcode 15+
+- Swift 5.10+
+- Xcode 15.3+
 
 ## Installation
 

@@ -166,3 +166,21 @@ extension SplatClientTests {
         XCTAssertEqual(error?.apiError?.message, "Bad Gateway")
     }
 }
+
+// MARK: - 0.1.0 compatibility
+
+extension SplatClientTests {
+
+    func testInterpolatedAPIErrorReadsAsItsMessage() async throws {
+        // 0.1.0 bound `.notFound(let message)` to a String; code that still
+        // interpolates the binding must show the message, not a struct dump.
+        MockURLProtocol.stub(Fixture.scenePath, .json(404, Fixture.sceneNotFound))
+
+        let error = await expectSplatError { try await self.makeClient().getScene(id: Fixture.sceneID) }
+
+        guard case .notFound(let message) = error else {
+            return XCTFail("Expected .notFound, got \(String(describing: error))")
+        }
+        XCTAssertEqual("Not found: \(message)", "Not found: Scene not found.")
+    }
+}
