@@ -76,7 +76,7 @@ final class PollingTask: Sendable {
     ///   - client: The API client to use for requests.
     ///   - evidence: Whether the scene is already known to exist.
     ///   - onProgress: Optional callback, on the main actor, after each poll.
-    /// - Returns: The final ``Scene`` once it is `complete`.
+    /// - Returns: The final ``SplatScene`` once it is `complete`.
     /// - Throws: ``SplatError/timeout`` if the scene doesn't finish within the timeout.
     ///           ``SplatError/processingFailed(_:)`` if the scene enters the `failed` state.
     ///           ``SplatError/cancelled`` if the scene was cancelled.
@@ -88,7 +88,7 @@ final class PollingTask: Sendable {
         using client: APIClient,
         evidence: SceneEvidence,
         onProgress: ProgressHandler? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         let deadline = timing.now().addingTimeInterval(timeout)
         var seen = evidence == .exists
         var rejections = 0
@@ -100,10 +100,10 @@ final class PollingTask: Sendable {
 
             // One request per poll: the loop does its own waiting, bounded by
             // the deadline, so per-request retries would only overrun it.
-            let scene: Scene
+            let scene: SplatScene
             do {
                 scene = try await client.request(
-                    Scene.self,
+                    SplatScene.self,
                     path: APIPath.scene(sceneId),
                     method: .get,
                     retry: .never
@@ -193,7 +193,7 @@ final class PollingTask: Sendable {
 
 // MARK: - Failure Message
 
-extension Scene {
+extension SplatScene {
 
     /// Why the server says processing failed.
     var failureMessage: String {

@@ -3,3 +3,6 @@
 xcuserdata/
 *.xcworkspace/
 DerivedData/
+
+# Local API keys for the example app (see Examples/SplatCapture/README.md).
+Secrets.xcconfig

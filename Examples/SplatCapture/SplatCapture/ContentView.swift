@@ -5,14 +5,29 @@ import SplatKit
 
 // MARK: - SplatKit Integration: Configuration
 //
-// 1. Set your API key here. Get one at https://splat-3d.com/dashboard
+// 1. Your API key is read at runtime from the SPLAT_API_KEY build setting.
+//    Copy Secrets.example.xcconfig to Secrets.xcconfig (git ignores it) and set
+//    it there. Never put a key in source: this repository is public.
 // 2. The SDK entry points used in this app:
 //    - SplatScanner  — captures video + ARKit poses (see startScan/stopAndUpload)
 //    - SplatClient   — uploads and processes via the Splat API (see stopAndUpload)
 //    - ARKitPose     — pose format sent to the API (handled internally by SplatScanner)
 
-/// Replace with your actual Splat API key before running on device.
-let apiKey = "s3d_8b580d374c3631e010b882143e17a61f"
+/// Your Splat API key, from the `SplatAPIKey` Info.plist entry, which the build
+/// fills from `SPLAT_API_KEY` in Secrets.xcconfig. `nil` until you set it.
+let apiKey: String? = {
+    guard let key = Bundle.main.object(forInfoDictionaryKey: "SplatAPIKey") as? String,
+          key.hasPrefix("s3d_") else {
+        return nil
+    }
+    return key
+}()
+
+/// Shown instead of scanning when no key is set.
+let missingAPIKeyMessage = """
+    No Splat API key. Copy Examples/SplatCapture/Secrets.example.xcconfig to \
+    Secrets.xcconfig, set SPLAT_API_KEY to your key, and build again.
+    """
 
 // MARK: - Mesh Material
 
@@ -341,7 +356,7 @@ final class ScanViewModel: ObservableObject {
     var arSession: ARSession? { scanner.session }
 
     // MARK: - SplatKit Integration: Client & Scanner Setup
-    private let client = SplatClient(apiKey: apiKey)
+    private let client = apiKey.map { SplatClient(apiKey: $0) }
     private let scanner = SplatScanner()
     private let haptics = UIImpactFeedbackGenerator(style: .medium)
     private var durationTimer: Timer?
@@ -349,6 +364,13 @@ final class ScanViewModel: ObservableObject {
     private var lastPoseCount: Int = 0
 
     func startScan() async {
+        // Without a key the upload fails after the whole scan: stop here.
+        guard client != nil else {
+            errorMessage = missingAPIKeyMessage
+            showError = true
+            return
+        }
+
         // Check for LiDAR support
         guard ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) else {
             errorMessage = "This device doesn't have a LiDAR scanner. SplatCapture requires iPhone 12 Pro or newer (or iPad Pro with LiDAR)."
@@ -399,6 +421,13 @@ final class ScanViewModel: ObservableObject {
         durationTimer?.invalidate()
         durationTimer = nil
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
+
+        guard let client else {
+            errorMessage = missingAPIKeyMessage
+            showError = true
+            state = .idle
+            return
+        }
 
         do {
             // MARK: - SplatKit Integration: Stop & Upload

@@ -9,17 +9,23 @@ processing.
 1. Open `SplatCapture.xcodeproj` in Xcode
 2. The project references the SplatKit SDK as a local SPM package (two
    directories up). Xcode resolves it automatically.
-3. Open `ContentView.swift` and replace the placeholder API key:
-   ```swift
-   let apiKey = "s3d_REPLACE_ME"  // <- your key here
+3. Give the app your API key. It is read at runtime from the `SPLAT_API_KEY`
+   build setting, which comes from `Secrets.xcconfig`. Git ignores that file:
+   ```sh
+   cd Examples/SplatCapture
+   cp Secrets.example.xcconfig Secrets.xcconfig
+   # then set SPLAT_API_KEY = s3d_... in Secrets.xcconfig
    ```
+   Never put a key in source files: this repository is public, and CI fails on
+   anything that looks like one. Without a key, the app says so when you tap
+   **Start Scan**.
 4. Select your physical iPhone as the run destination and hit **Run**
 
 ### Getting an API Key
 
 1. Sign up at [splat-3d.com/dashboard](https://splat-3d.com/dashboard)
 2. Create a new API key — it starts with `s3d_`
-3. Copy it into `ContentView.swift` as shown above
+3. Put it in `Secrets.xcconfig` as shown above
 
 ## Device Requirements
 

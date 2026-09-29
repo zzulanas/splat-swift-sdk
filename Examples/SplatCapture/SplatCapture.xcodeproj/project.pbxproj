@@ -19,6 +19,7 @@
 		A1000005229F0001 /* SplatCapture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SplatCapture.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1000006229F0001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000018229F0001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A100001A229F0001 /* SplatCapture.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = SplatCapture.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -36,6 +37,7 @@
 		A1000008229F0001 = {
 			isa = PBXGroup;
 			children = (
+				A100001A229F0001 /* SplatCapture.xcconfig */,
 				A1000009229F0001 /* SplatCapture */,
 				A100000A229F0001 /* Products */,
 			);
@@ -190,6 +192,7 @@
 		};
 		A1000015229F0001 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100001A229F0001 /* SplatCapture.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
@@ -219,6 +222,7 @@
 		};
 		A1000016229F0001 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = A100001A229F0001 /* SplatCapture.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;

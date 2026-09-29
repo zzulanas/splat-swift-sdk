@@ -377,8 +377,8 @@ public final class SplatClient: Sendable {
     /// - Parameter id: The scene ID.
     /// - Returns: The scene with current status.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    public func getScene(id: String) async throws -> Scene {
-        try await api.request(Scene.self, path: APIPath.scene(id), method: .get)
+    public func getScene(id: String) async throws -> SplatScene {
+        try await api.request(SplatScene.self, path: APIPath.scene(id), method: .get)
     }
 
     // MARK: - List Scenes
@@ -390,7 +390,7 @@ public final class SplatClient: Sendable {
     /// - Returns: The scenes on the first page.
     /// - Throws: ``SplatError`` on network or API errors.
     @available(*, deprecated, message: "Returns only the first page. Use listScenePage(cursor:limit:) or allScenes(pageSize:).")
-    public func listScenes() async throws -> [Scene] {
+    public func listScenes() async throws -> [SplatScene] {
         try await listScenePage().scenes
     }
 
@@ -418,7 +418,7 @@ public final class SplatClient: Sendable {
             query.append(URLQueryItem(name: "limit", value: String(limit)))
         }
 
-        let page = try await api.requestPage(Scene.self, path: APIPath.scenes, query: query)
+        let page = try await api.requestPage(SplatScene.self, path: APIPath.scenes, query: query)
         return ScenePage(scenes: page.data, nextCursor: page.meta.nextCursor, hasMore: page.meta.hasMore)
     }
 
@@ -454,14 +454,14 @@ public final class SplatClient: Sendable {
     ///   - id: The scene ID.
     ///   - update: The fields to change.
     /// - Returns: The updated scene. It is built from the stored record, so
-    ///   ``Scene/downloadURL`` and ``Scene/format`` are `nil`; use
+    ///   ``SplatScene/downloadURL`` and ``SplatScene/format`` are `nil`; use
     ///   ``getScene(id:)`` for those.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
     ///   ``SplatError/requestFailed(_:)`` with code `invalid_input` if `update`
     ///   sets no fields.
-    public func updateScene(id: String, _ update: SceneUpdate) async throws -> Scene {
+    public func updateScene(id: String, _ update: SceneUpdate) async throws -> SplatScene {
         try await api.request(
-            Scene.self,
+            SplatScene.self,
             path: APIPath.scene(id),
             method: .patch,
             body: UpdateSceneBody(update)
@@ -614,7 +614,7 @@ public final class SplatClient: Sendable {
     public func waitForScene(
         id: String,
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         try await poller.poll(sceneId: id, using: api, evidence: .none, onProgress: onProgress)
     }
 
@@ -672,7 +672,7 @@ public final class SplatClient: Sendable {
         lidarPoints: [[Float]]? = nil,
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil,
         onSceneCreated: (@MainActor @Sendable (String) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         // 1. Create scene
         let (sceneID, uploadURL) = try await createScene(title: title, preset: preset)
         await onSceneCreated?(sceneID)
@@ -723,10 +723,10 @@ public final class SplatClient: Sendable {
     public func resume(
         _ interruption: SplatError.Interruption,
         onProgress: (@MainActor @Sendable (SceneStatus, Double?) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         let run = Run(sceneID: interruption.sceneID, idempotencyKey: interruption.idempotencyKey, request: interruption.request)
 
-        let scene: Scene
+        let scene: SplatScene
         do {
             scene = try await getScene(id: run.sceneID)
         } catch {
@@ -773,7 +773,7 @@ public final class SplatClient: Sendable {
         _ run: Run,
         from start: SplatError.Interruption.Phase,
         onProgress: ProgressHandler?
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         var phase = start
 
         do {

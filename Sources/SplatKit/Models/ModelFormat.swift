@@ -3,7 +3,7 @@ import Foundation
 // MARK: - ModelFormat
 
 /// File format of a scene's 3D model, for ``SplatClient/downloadScene(id:format:)``
-/// and ``Scene/format``.
+/// and ``SplatScene/format``.
 ///
 /// The set is open: a format the API adds later keeps its raw value, so
 /// `switch` with a `default`.
