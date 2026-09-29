@@ -715,7 +715,6 @@ final class APIClient: Sendable {
         func unsendable(_ code: URLError.Code) -> SplatError {
             .uploadFailed(URLError(code, userInfo: [NSURLErrorFailingURLErrorKey: fileURL]))
         }
-    }
 
         // FileManager, not URL.resourceValues: a URL caches those, so a file
         // deleted since the URL was last checked would still look present.
