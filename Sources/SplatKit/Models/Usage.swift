@@ -14,14 +14,33 @@ public struct Usage: Decodable, Sendable, Equatable {
     /// Scenes processed this period.
     public let scenesProcessed: Int
 
-    /// GPU seconds recorded this period.
+    /// GPU seconds recorded this period. The API doesn't record GPU time
+    /// yet, so this is 0.
     public let gpuSecondsUsed: Int
 
-    /// Storage bytes recorded this period.
+    /// Storage bytes recorded this period. The API doesn't record storage
+    /// yet, so this is 0.
     public let storageBytes: Int64
 
     /// Your plan's limits for this period.
     public let limits: Limits
+
+    /// Create usage, e.g. for a test double.
+    public init(
+        period: String,
+        scenesCreated: Int,
+        scenesProcessed: Int,
+        gpuSecondsUsed: Int,
+        storageBytes: Int64,
+        limits: Limits
+    ) {
+        self.period = period
+        self.scenesCreated = scenesCreated
+        self.scenesProcessed = scenesProcessed
+        self.gpuSecondsUsed = gpuSecondsUsed
+        self.storageBytes = storageBytes
+        self.limits = limits
+    }
 
     enum CodingKeys: String, CodingKey {
         case period
@@ -43,11 +62,19 @@ public struct Usage: Decodable, Sendable, Equatable {
         /// Scenes you can process per period, or `nil` for unlimited.
         public let scenesProcessed: Int?
 
-        /// GPU seconds per period.
+        /// GPU seconds per period. The API doesn't enforce it yet.
         public let gpuSeconds: Int
 
-        /// Storage quota in bytes.
+        /// Storage quota in bytes. The API doesn't enforce it yet.
         public let storageBytes: Int64
+
+        /// Create limits, e.g. for a test double. `nil` means unlimited.
+        public init(scenesCreated: Int?, scenesProcessed: Int?, gpuSeconds: Int, storageBytes: Int64) {
+            self.scenesCreated = scenesCreated
+            self.scenesProcessed = scenesProcessed
+            self.gpuSeconds = gpuSeconds
+            self.storageBytes = storageBytes
+        }
 
         enum CodingKeys: String, CodingKey {
             case scenesCreated = "scenes_created"

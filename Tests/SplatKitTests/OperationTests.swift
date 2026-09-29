@@ -55,7 +55,7 @@ extension SplatClientTests {
 
         XCTAssertEqual(scene.status, .complete)
         XCTAssertEqual(scene.numGaussians, 1_940_000)
-        XCTAssertEqual(scene.format, "sog")
+        XCTAssertEqual(scene.format, .sog)
         XCTAssertEqual(scene.downloadURL?.absoluteString, "https://api.splat-3d.com/v1/scenes/a1b2c3d4e5f6/download")
         // PostgREST's microsecond timestamps decode (to millisecond precision).
         let whole = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-28T12:00:00Z"))
@@ -371,5 +371,25 @@ extension SplatClientTests {
         let body = try await launchBody(points: points)
 
         XCTAssertEqual((body["lidar_points"] as? [[Double]])?.count, 50_000)
+    }
+}
+
+// MARK: - Model formats
+
+extension SplatClientTests {
+
+    func testDownloadKeepsAFormatThisSDKDoesntName() async throws {
+        // If the API serves a format added after this release, the file must
+        // say what it is rather than borrow the requested extension.
+        MockURLProtocol.stub("\(Fixture.scenePath)/download", MockURLProtocol.Stub(
+            statusCode: 200,
+            body: Data("spz".utf8),
+            headers: ["Content-Type": "application/octet-stream", "X-Splat-Format": "spz"]
+        ))
+
+        let file = try await makeClient().downloadScene(id: Fixture.sceneID)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        XCTAssertEqual(file.pathExtension, "spz")
     }
 }

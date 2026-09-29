@@ -343,6 +343,8 @@ public final class SplatClient: Sendable {
     /// Every scene for the authenticated user, newest first.
     ///
     /// Pages are fetched as you iterate, so stopping early stops fetching.
+    /// If the task is cancelled, iteration throws `CancellationError` rather
+    /// than ending, so a finished loop always means every scene was seen.
     ///
     /// ```swift
     /// for try await scene in client.allScenes() {
@@ -352,9 +354,8 @@ public final class SplatClient: Sendable {
     ///
     /// - Parameter pageSize: Scenes per request, 1–100. The API defaults to 50.
     /// - Returns: A sequence that throws ``SplatError`` if a page fails to load.
-    public func allScenes(pageSize: Int? = nil) -> AsyncThrowingStream<Scene, Error> {
-        let pager = ScenePager(client: self, pageSize: pageSize)
-        return AsyncThrowingStream(unfolding: { try await pager.next() })
+    public func allScenes(pageSize: Int? = nil) -> SceneSequence {
+        SceneSequence(client: self, pageSize: pageSize)
     }
 
     // MARK: - Update Scene
@@ -395,6 +396,11 @@ public final class SplatClient: Sendable {
     /// so this call is never retried automatically: repeating it starts
     /// another scene.
     ///
+    /// If it throws after the request was sent, e.g. the connection dropped
+    /// while the API was copying the source, the new scene may exist and be
+    /// charged anyway. Look for it in ``allScenes(pageSize:)`` (newest first,
+    /// titled with the next version number) before retraining again.
+    ///
     /// - Parameters:
     ///   - id: The scene to retrain.
     ///   - preset: Quality preset for the new scene.
@@ -418,8 +424,10 @@ public final class SplatClient: Sendable {
     ///
     /// - Parameter id: The scene ID.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    ///   ``SplatError/requestFailed(_:)`` with code `conflict` if the scene has
-    ///   already finished.
+    ///   ``SplatError/requestFailed(_:)`` with code `conflict` if the scene
+    ///   can't be cancelled in its current state: it has finished, or it is in
+    ///   a preview stage (``SceneStatus/previewExtracting``,
+    ///   ``SceneStatus/previewGenerating``, ``SceneStatus/previewCompressing``).
     public func cancelScene(id: String) async throws {
         try await api.requestVoid(path: APIPath.scene(id, .cancel), method: .post)
     }
@@ -446,14 +454,22 @@ public final class SplatClient: Sendable {
         let query = [URLQueryItem(name: "format", value: format.rawValue)]
         let (file, response) = try await api.download(path: APIPath.scene(id, .download), query: query)
 
-        let served = response.value(forHTTPHeaderField: HTTPHeader.splatFormat)
-            .flatMap(ModelFormat.init(rawValue:)) ?? format
+        let served = Self.servedFormat(response.value(forHTTPHeaderField: HTTPHeader.splatFormat)) ?? format
         let destination = FileManager.default.temporaryDirectory
             .appendingPathComponent("scene-\(id)-\(UUID().uuidString)")
             .appendingPathExtension(served.rawValue)
 
         try FileManager.default.moveItem(at: file, to: destination)
         return destination
+    }
+
+    /// The format a download reports in `X-Splat-Format`, if it is a plain
+    /// name that is safe to use as a file extension.
+    private static func servedFormat(_ header: String?) -> ModelFormat? {
+        guard let header, !header.isEmpty, header.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+            return nil
+        }
+        return ModelFormat(rawValue: header.lowercased())
     }
 
     // MARK: - Scene Thumbnail
