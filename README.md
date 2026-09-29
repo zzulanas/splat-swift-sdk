@@ -81,6 +81,7 @@ let scene = try await client.createAndProcess(
 | `uploadVideo(from:to:)` | Upload a video file to the presigned URL |
 | `processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)` | Trigger GPU processing |
 | `waitForScene(id:onProgress:)` | Poll a scene until processing finishes |
+| `resume(_:onProgress:)` | Continue an interrupted `createAndProcess` without paying again |
 | `getScene(id:)` | Get scene status and metadata |
 | `listScenePage(cursor:limit:)` | One page of scenes, newest first, with the next page's cursor |
 | `allScenes(pageSize:)` | Every scene, fetched a page at a time as you iterate |
@@ -91,7 +92,7 @@ let scene = try await client.createAndProcess(
 | `getSceneThumbnail(id:)` | Thumbnail image data |
 | `getUsage()` | Usage this billing period and plan limits |
 | `deleteScene(id:)` | Delete a scene and all files |
-| `createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:)` | Full flow in one call |
+| `createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:onSceneCreated:)` | Full flow in one call |
 
 `listScenes()` is deprecated: it returns only the first page.
 
@@ -116,43 +117,46 @@ For page-level control, pass each page's `nextCursor` back until it is `nil`. Tr
 
 ### Retries, Timeouts, and Resuming
 
-Reads and `processScene` retry network failures, 5xx responses and rate limits up to three times with exponential backoff and jitter, waiting out a `Retry-After` of up to 60 seconds. A used-up monthly quota (`quota_exceeded`) is not retried. Creating, retraining, updating, deleting and cancelling are never retried, because the API cannot deduplicate them yet.
+Reads and `processScene` retry network failures, 5xx responses and rate limits up to three times with exponential backoff and jitter, waiting out a `Retry-After` of up to 60 seconds. A used-up monthly quota (`quota_exceeded`) and a launch the API failed for good (`upstream_error`) are not retried. Creating, retraining, updating, deleting and cancelling are never retried, because the API cannot deduplicate them yet.
 
-The API launches a scene at most once. `processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass your own key. Calling it again for the same scene with the same inputs replays the original launch instead of charging twice, after a dropped connection or an app restart. So to survive a restart, persist the scene ID (and the capture you launch with):
+Progress callbacks run on the main actor, so a view model can update its state from them directly.
 
-```swift
-let launch = try await client.processScene(id: sceneID, arkitPoses: poses)
-let scene = try await client.waitForScene(id: sceneID)
-```
-
-`waitForScene` keeps polling through network failures, 5xx and rate limits until its deadline, because they say nothing about the job. It throws `SplatError.notStarted` at once for a scene that was never launched, `SplatError.timeout` when this client stops waiting (the job may still finish), and `SplatError.processingFailed` when the server reports a failure.
-
-If `createAndProcess` fails after creating the scene, it throws `SplatError.interrupted`. The `Interruption` says which step failed, what was charged, and how to resume:
+**Continuing after a failure.** The API launches a scene at most once. If `createAndProcess` stops after creating the scene, before the outcome is known, it throws `SplatError.interrupted`. `resume` continues it without paying again. It reads the scene first, uploads again only if the upload failed, and launches only if nothing was launched, with exactly the request `createAndProcess` sent:
 
 ```swift
 do {
     scene = try await client.createAndProcess(videoURL: videoURL, arkitPoses: poses)
 } catch SplatError.interrupted(let interruption) where interruption.underlying is CancellationError {
-    // The task was cancelled (e.g. a SwiftUI view went away). A launched job keeps running.
+    // The task was cancelled (e.g. a SwiftUI view went away). Keep
+    // interruption.sceneID: a launched job keeps running.
 } catch SplatError.interrupted(let interruption) {
-    switch interruption.phase {
-    case .launch:
-        // Charged at most once: the same key replays a launch that went through.
-        _ = try await client.processScene(
-            id: interruption.sceneID,
-            arkitPoses: poses,
-            idempotencyKey: interruption.idempotencyKey
-        )
-        scene = try await client.waitForScene(id: interruption.sceneID)
-    case .wait:
-        // Launched and charged; the job keeps running.
-        scene = try await client.waitForScene(id: interruption.sceneID)
-    default:
-        // .upload: nothing was charged, and the upload URL is gone. Start over.
-        try await client.deleteScene(id: interruption.sceneID)
-    }
+    scene = try await client.resume(interruption)
 }
 ```
+
+Outcomes the server has settled are thrown as themselves and can't be resumed: `SplatError.processingFailed`, `SplatError.cancelled`, and the error of a launch the API failed and refunded. Start over with a new scene.
+
+**Surviving an app restart.** Save the ID `onSceneCreated` passes. It fires as soon as the scene exists, before anything is charged. On relaunch, wait for that scene. If it was never launched, launch it with the same capture:
+
+```swift
+scene = try await client.createAndProcess(videoURL: videoURL, arkitPoses: poses) { status, pct in
+    progress = pct ?? 0
+} onSceneCreated: { id in
+    UserDefaults.standard.set(id, forKey: "pendingScene")
+}
+
+// After a relaunch:
+do {
+    scene = try await client.waitForScene(id: pendingID)
+} catch SplatError.notStarted {
+    _ = try await client.processScene(id: pendingID, arkitPoses: poses)
+    scene = try await client.waitForScene(id: pendingID)
+}
+```
+
+`processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass your own, so repeating it for a scene with the same inputs replays the original launch. `createAndProcess` launches with `enableLOD: preset.enableLOD`; pass the same value when you launch it yourself.
+
+**Waiting.** `waitForScene` keeps polling through network failures, 5xx and rate limits until its deadline, because they say nothing about the job. Once it has read the scene, it also rides out a short run of 401 or 404, which the API returns when its database blips. After the deadline it looks once more, then throws `SplatError.timeout` (the job may still finish). It throws `SplatError.notStarted` for a scene still `uploading` on two polls in a row.
 
 The polling timeout defaults to 165 minutes, just past the point where the API fails a job that is still running. Tune it with `SplatClient.Configuration`:
 
@@ -185,7 +189,7 @@ do {
 } catch SplatError.processingFailed(let reason) {
     // Pipeline error
 } catch SplatError.interrupted(let interruption) {
-    // createAndProcess failed after creating interruption.sceneID; see above
+    // createAndProcess stopped before its outcome was known: client.resume(interruption)
 }
 ```
 
