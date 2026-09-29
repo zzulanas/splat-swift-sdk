@@ -21,7 +21,7 @@ final class ContractTests: XCTestCase {
         "getScene": "getScene(id:)",
         "updateScene": "updateScene(id:_:)",
         "deleteScene": "deleteScene(id:)",
-        "processScene": "processScene(id:arkitPoses:lidarPoints:enableLOD:)",
+        "processScene": "processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)",
         "retrainScene": "retrainScene(id:preset:)",
         "cancelScene": "cancelScene(id:)",
         "downloadScene": "downloadScene(id:format:)",
@@ -56,6 +56,36 @@ final class ContractTests: XCTestCase {
             "undeclared data.psnr_holdout",
             "undeclared data.ssim_holdout",
         ]),
+        FixtureCase("trainingScene", Fixture.trainingScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
+        FixtureCase("uploadingScene", Fixture.uploadingScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
+        FixtureCase("estimatingPosesScene", Fixture.estimatingPosesScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
+        FixtureCase("failedLaunchScene", Fixture.failedLaunchScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
+        FixtureCase("sweptScene", Fixture.sweptScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
+        FixtureCase("cancelledScene", Fixture.cancelledScene, "getScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
         // listScenes never selects ssim, which the spec's Scene requires.
         FixtureCase("scenePageOne", Fixture.scenePageOne, "listScenes", 200, deviations: ["missing data[].ssim"]),
         FixtureCase("scenePageTwo", Fixture.scenePageTwo, "listScenes", 200, deviations: ["missing data[].ssim"]),
@@ -71,6 +101,14 @@ final class ContractTests: XCTestCase {
         FixtureCase("nothingToUpdate", Fixture.nothingToUpdate, "updateScene", 400),
         FixtureCase("launchConflict", Fixture.launchConflict, "processScene", 409),
         FixtureCase("insufficientCredits", Fixture.insufficientCredits, "processScene", 402),
+        FixtureCase("launchUnconfirmed", Fixture.launchUnconfirmed, "processScene", 503),
+        FixtureCase("processQuotaExceeded", Fixture.processQuotaExceeded, "processScene", 429),
+        FixtureCase("launchRejected", Fixture.launchRejected, "processScene", 502),
+        FixtureCase("sourceMissing", Fixture.sourceMissing, "processScene", 400),
+        FixtureCase("sourceMissingCoded", Fixture.sourceMissingCoded, "processScene", 400),
+        FixtureCase("duplicatePosePaths", Fixture.duplicatePosePaths, "processScene", 400),
+        FixtureCase("alreadyProcessing", Fixture.alreadyProcessing, "processScene", 409),
+        FixtureCase("keyLookupFailed", Fixture.keyLookupFailed, "getScene", 401),
         FixtureCase("retrainConflict", Fixture.retrainConflict, "retrainScene", 409),
         FixtureCase("cancelConflict", Fixture.cancelConflict, "cancelScene", 409),
         FixtureCase("noModel", Fixture.noModel, "downloadScene", 404),
@@ -99,6 +137,10 @@ final class ContractTests: XCTestCase {
     static let undocumentedStatuses: Set<String> = [
         "deleteScene 403",   // another user's scene (deleteScene in api/src/lib/scenes.ts)
         "processScene 402",  // insufficient credits (processScene)
+        "processScene 503",  // launch not confirmed; "Retry the same request" (processScene)
+        "processScene 429",  // monthly processing quota used up (processScene)
+        "processScene 502",  // a launch the API failed and refunded (failLaunch)
+        "processScene 400",  // source not in storage, or duplicate pose paths (processScene)
         "getScene 500",      // any unhandled error (errorHandler)
         "listScenes 400",    // `limit` outside 1–100 (route validation)
     ]

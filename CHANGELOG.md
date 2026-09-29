@@ -50,9 +50,99 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
     a stage is named, so don't index into it.
 - SplatKit needs Swift 5.10 (Xcode 15.3): `SplatScanner` uses
   `nonisolated(unsafe)`. The manifest's tools version says so.
+- Once `createAndProcess` has created the scene, a failure that leaves the
+  outcome open (network errors, a timeout, cancellation, a launch refused for
+  want of credits) is thrown as `SplatError.interrupted(Interruption)`.
+  Continue it with `resume(_:)`. Errors no resume can get past are thrown as
+  themselves:
+  - `.processingFailed`: the server failed the scene, including a launch it
+    failed. Rarely a job the stale-job sweep failed still completes, so check
+    `getScene` before starting over.
+  - `.cancelled`.
+  - `.notFound`: the scene was deleted, as a replay of its launch confirms.
+  - `.uploadFailed` for a capture that is missing or empty.
+  - `.requestFailed` when storage refuses the upload URL, or the API refuses
+    the launch request itself (400).
+
+  **Around `createAndProcess`, these catches still compile but no longer see
+  the errors `.interrupted` carries:**
+  - `catch is CancellationError`: a cancelled task arrives as `.interrupted`
+    with `underlying` `CancellationError`. SwiftUI `.task` code that ignores
+    cancellation should match
+    `SplatError.interrupted(let i) where i.underlying is CancellationError`.
+    Cancelled while the scene is still being created, it is a plain
+    `CancellationError`, and the API may have created the scene anyway:
+    `allScenes` lists it.
+  - `catch let error as URLError`, including `URLError.cancelled`.
+  - `catch SplatError.uploadFailed`, `.unauthorized`, `.notFound`,
+    `.rateLimited`, `.requestFailed`, `.decodingError` and `.timeout`.
+  Match `.interrupted` and inspect `interruption.underlying` instead.
+  Exhaustive `switch`es over `SplatError` must also handle `.interrupted` and
+  `.notStarted`.
+- Progress callbacks (`onProgress` on `createAndProcess`, `waitForScene` and
+  `resume`) are `@MainActor @Sendable` and **run on the main actor**; before,
+  they ran on the concurrency pool. What breaks:
+  - A callback written in an actor that uses the actor's state **no longer
+    compiles**, in Swift 5 mode too, since it runs on the main actor, not the
+    actor's. Hop back explicitly, e.g. `Task { await self.record(pct) }`.
+  - Code that blocks the main thread until the call returns, such as a
+    command-line tool waiting on a `DispatchSemaphore`, **hangs at the first
+    callback**. Await the call instead, e.g. from an `async` `main`.
+  - A stored closure that isn't `@Sendable` converts with a warning in Swift 5
+    mode, and is an error in Swift 6 mode.
+  - Slow work in the callback blocks the main thread.
+  A closure literal written in main-actor code compiles as before, and now
+  also in Swift 6 mode, where it didn't.
+- A cancelled task throws `CancellationError` from every call. It used to
+  surface as `URLError.cancelled` from a request, or as
+  `.uploadFailed(URLError.cancelled)` from an upload, so
+  `catch let error as URLError where error.code == .cancelled` **still
+  compiles but stops matching**.
+- `processScene` returns a `SceneLaunch`, the API's acknowledgement (scene ID,
+  status, message, idempotency key), instead of a `Scene` read after the
+  launch. That read could fail after the launch was already charged, and
+  report a paid launch as an error. `launch.status` still compiles; read the
+  scene with `getScene` or `waitForScene`.
+- `processScene` sends `Idempotency-Key: process-<scene ID>` unless you pass
+  one, so repeating it for a scene replays the launch. A scene launched with
+  another key, or with none, answers a repeat with `conflict` (409).
+- `waitForScene` throws the new `.notStarted` for a scene still `uploading` on
+  two polls in a row, where no job exists. It used to poll it until the
+  timeout.
+- The default polling timeout is 165 minutes instead of 20. The API fails a
+  job still processing after 150 minutes and checks every 10, so 20 minutes
+  gave up on jobs that were still running.
 
 ### Added
 
+- Automatic retries for reads and `processScene`: network failures, 5xx and
+  rate limits, up to 3 retries with exponential backoff and jitter, honouring
+  a `Retry-After` of up to 60 seconds. A used-up quota and other writes are
+  never retried.
+- `processScene(…, idempotencyKey:)` and `SceneLaunch`. Every launch sends an
+  `Idempotency-Key`, `process-<scene ID>` by default, and reuses it on retries.
+- `SplatClient.Configuration` (`requestTimeout`, `pollingInterval`,
+  `pollingTimeout`, `maxRetries`) and `init(apiKey:baseURL:session:configuration:)`.
+- `resume(_:onProgress:)` continues an interrupted `createAndProcess` without
+  paying again. It launches with the identical request (the API hashes
+  `enable_lod` and `lidar_points`, so a hand-rebuilt launch could 409 or drop
+  them), which the API replays if the launch went through, and uploads again
+  only if the API answers that the upload never arrived.
+- `resume(sceneID:preset:arkitPoses:lidarPoints:onProgress:)` continues a
+  scene after an app restart, from its saved ID and the same preset and
+  capture, rebuilding the same request. Every argument that shapes the launch
+  is required, `nil` included, so leaving one out can't launch another job.
+- `onSceneCreated` on `createAndProcess`: the scene ID as soon as the scene
+  exists, before anything is charged, so an app killed mid-wait can resume it.
+- `waitForScene(id:onProgress:)` to pick up a launched scene. It keeps polling
+  through network failures, 5xx and rate limits until its deadline; once it
+  has read the scene, it also rides out 401 and 404 for five minutes, which
+  the API returns when its database blips. After the deadline it looks once
+  more, and again if that look fails.
+- `SplatError.Interruption` (with `Phase`), `SplatError.notStarted`, and
+  public initializers for `SceneLaunch` and `Interruption`. Printing an
+  interruption shows its scene, phase, key and cause, never the presigned
+  upload URL or the capture.
 - `updateScene(id:_:)` with `SceneUpdate`, `retrainScene(id:preset:)`,
   `cancelScene(id:)`, `downloadScene(id:format:)` with `ModelFormat`,
   `getSceneThumbnail(id:)`, and `getUsage()` with `Usage`. The SDK now covers
@@ -78,6 +168,19 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 
 ### Changed
 
+- `SplatClient.init`'s `pollingInterval` and `pollingTimeout` are optional and
+  default to the `Configuration` values. Existing calls compile unchanged.
+- `SplatError.timeout` and `.cancelled` now document what throws them: the
+  client giving up on polling, and a scene cancelled on the server.
+- `SplatError.apiError` looks through `.interrupted`.
+- A launch the API failed for good (`upstream_error`) is not retried: every
+  repeat replays the same stored failure.
+- Polls make one request each and wait out failures at the polling interval,
+  so per-request retries no longer run past the deadline.
+- Request bodies are encoded with sorted keys, so a repeated launch is
+  byte-identical.
+- `.processingFailed` is no longer documented as final: the pipeline can
+  complete a scene the stale-job sweep had failed.
 - Scene IDs are percent-encoded as a single path segment.
 - List cursors are percent-encoded in full. The API decodes a bare `+` in a
   query string as a space, which would corrupt the timestamp cursor's
@@ -105,6 +208,12 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 
 ### Fixed
 
+- `uploadVideo` and `createAndProcess` sent a missing or empty file as an
+  empty upload, which storage accepted, so the launch was charged for an
+  empty video. They now throw `.uploadFailed` with a `URLError`
+  (`.fileDoesNotExist`, `.noPermissionsToReadFile`, `.fileIsDirectory` or
+  `.zeroByteResource`) before sending anything, and `createAndProcess` before
+  it creates the scene.
 - Viewer URLs pointed at the retired `splat-3d.com/s/{id}` route, which returns
   404; they now use `/tour/{id}`.
 - A complete scene whose response has `viewer_url: null`, because it has no

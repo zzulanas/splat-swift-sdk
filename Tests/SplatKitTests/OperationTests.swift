@@ -134,14 +134,18 @@ extension SplatClientTests {
         XCTAssertEqual(error?.errorDescription?.hasPrefix("Request failed (402)"), true)
     }
 
-    func testProcessSceneReturnsSceneAfterLaunch() async throws {
+    func testProcessSceneReturnsTheLaunch() async throws {
         MockURLProtocol.stub("\(Fixture.scenePath)/process", .json(200, Fixture.processAccepted))
-        MockURLProtocol.stub(Fixture.scenePath, .json(200, Fixture.completeScene))
 
-        let scene = try await makeClient().processScene(id: Fixture.sceneID)
+        let launch = try await makeClient().processScene(id: Fixture.sceneID)
 
-        XCTAssertEqual(scene.id, Fixture.sceneID)
+        XCTAssertEqual(launch.sceneID, Fixture.sceneID)
+        XCTAssertEqual(launch.status, .processing)
+        XCTAssertEqual(launch.message, "Processing started. This typically takes 7-15 minutes.")
+        XCTAssertEqual(launch.idempotencyKey, "process-\(Fixture.sceneID)")
         XCTAssertEqual(MockURLProtocol.requests(to: "\(Fixture.scenePath)/process").first?.httpMethod, "POST")
+        // Nothing is read after the launch.
+        XCTAssertTrue(MockURLProtocol.requests(to: Fixture.scenePath).isEmpty)
     }
 
     // MARK: - retrainScene

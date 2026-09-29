@@ -1,15 +1,38 @@
 import Foundation
 
+// MARK: - Progress
+
+/// Progress callbacks run on the main actor, so a view model can update its
+/// state from them directly.
+typealias ProgressHandler = @MainActor @Sendable (SceneStatus, Double?) -> Void
+
+// MARK: - SceneEvidence
+
+/// What is known about a scene before polling starts.
+enum SceneEvidence {
+    /// Nothing yet: a 401 or 404 on the first read is taken at its word.
+    case none
+    /// It was just launched or read, so a brief run of 401 or 404 is a server
+    /// blip, not a revoked key or a deleted scene.
+    case exists
+}
+
 // MARK: - PollingTask
 
 /// Polls a scene's status at regular intervals until it reaches a terminal state.
 ///
-/// Used internally by ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:onProgress:)``
-/// to wait for processing to complete.
+/// Backs ``SplatClient/waitForScene(id:onProgress:)``,
+/// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:onSceneCreated:)``
+/// and ``SplatClient/resume(_:onProgress:)``.
 ///
-/// - Polls every 10 seconds by default.
-/// - Times out after 20 minutes (configurable).
-/// - Respects Swift Concurrency cancellation.
+///   poll ──> complete ─────────────> return
+///     │      failed / cancelled ───> throw (the server's outcome)
+///     │      uploading, twice ─────> throw .notStarted (no job exists)
+///     │      any other status ─────> wait the interval, poll again
+///     └─ fails: network, 5xx, 429 ─> no news; wait the interval (or Retry-After)
+///               401 / 404 ─────────> no news for 5 minutes once the scene is known
+///               other 4xx ─────────> throw (the request itself is wrong)
+///   deadline passes ───────────────> one last poll (two if the first fails), then .timeout
 final class PollingTask: Sendable {
 
     /// How often to poll for status updates (in seconds).
@@ -18,14 +41,39 @@ final class PollingTask: Sendable {
     /// Maximum time to wait before throwing ``SplatError/timeout`` (in seconds).
     let timeout: TimeInterval
 
+    /// Clock and sleep; replaced in tests.
+    let timing: Timing
+
+    /// URL failures that no amount of waiting fixes: the request can't be made.
+    private static let fatalURLErrors: Set<URLError.Code> = [.badURL, .unsupportedURL]
+
+    /// Consecutive 401/404 answers always tolerated for a scene already seen,
+    /// however long they take. The API returns them when its database blips
+    /// (auth.ts answers a failed key lookup with 401; getSceneStatus answers
+    /// a failed query with 404).
+    static let toleratedRejections = 3
+
+    /// How long after the scene was last read a 401 or 404 still counts as
+    /// a blip, however often it polls. After it, the error is thrown; a 404
+    /// then ends `createAndProcess` only if a launch replay confirms the
+    /// scene is gone.
+    static let rejectionWindow: TimeInterval = 5 * 60
+
+    /// Polls in a row that must find `uploading` before concluding nothing was
+    /// launched. The web app charges and dispatches a moment before it marks a
+    /// scene launched, so one sighting isn't proof.
+    static let uploadingSightingsForNotStarted = 2
+
     /// Creates a polling task with the given interval and timeout.
     ///
     /// - Parameters:
-    ///   - interval: Seconds between polls. Default is 10.
-    ///   - timeout: Maximum wait time in seconds. Default is 1200 (20 minutes).
-    init(interval: TimeInterval = 10, timeout: TimeInterval = 1200) {
+    ///   - interval: Seconds between polls.
+    ///   - timeout: Maximum wait time in seconds.
+    ///   - timing: Clock and sleep to use.
+    init(interval: TimeInterval, timeout: TimeInterval, timing: Timing = .live) {
         self.interval = interval
         self.timeout = timeout
+        self.timing = timing
     }
 
     /// Poll the scene until it reaches a terminal state.
@@ -33,49 +81,142 @@ final class PollingTask: Sendable {
     /// - Parameters:
     ///   - sceneId: The scene ID to poll.
     ///   - client: The API client to use for requests.
-    ///   - onProgress: Optional callback invoked after each poll with the current status and progress percentage.
-    /// - Returns: The final ``SplatScene`` in a terminal state (`complete` or `failed`).
-    /// - Throws: ``SplatError/timeout`` if the scene doesn't complete within the timeout.
+    ///   - evidence: Whether the scene is already known to exist.
+    ///   - onProgress: Optional callback, on the main actor, after each poll.
+    /// - Returns: The final ``SplatScene`` once it is `complete`.
+    /// - Throws: ``SplatError/timeout`` if the scene doesn't finish within the timeout.
     ///           ``SplatError/processingFailed(_:)`` if the scene enters the `failed` state.
-    ///           ``SplatError/cancelled`` if the task is cancelled.
+    ///           ``SplatError/cancelled`` if the scene was cancelled.
+    ///           ``SplatError/notStarted`` if the scene stays `uploading`.
+    ///           The API error for a rejected request, e.g. ``SplatError/notFound(_:)``.
+    ///           `CancellationError` if the task is cancelled.
     func poll(
         sceneId: String,
         using client: APIClient,
-        onProgress: ((SceneStatus, Double?) -> Void)? = nil
+        evidence: SceneEvidence,
+        onProgress: ProgressHandler? = nil
     ) async throws -> SplatScene {
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = timing.now().addingTimeInterval(timeout)
+        var seen = evidence == .exists
+        var lastSeen = timing.now()
+        var rejections = 0
+        var uploadingSightings = 0
+        var retriedLate = false
 
-        while Date() < deadline {
+        while true {
             // Check for task cancellation
             try Task.checkCancellation()
 
-            let scene: SplatScene = try await client.request(
-                SplatScene.self,
-                path: APIPath.scene(sceneId),
-                method: .get
-            )
+            // One request per poll: the loop does its own waiting, bounded by
+            // the deadline, so per-request retries would only overrun it.
+            let scene: SplatScene
+            do {
+                scene = try await client.request(
+                    SplatScene.self,
+                    path: APIPath.scene(sceneId),
+                    method: .get,
+                    retry: .never
+                )
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                if Self.isRejection(error) {
+                    let blip = rejections < Self.toleratedRejections
+                        || timing.now().timeIntervalSince(lastSeen) < Self.rejectionWindow
+                    guard seen, blip else {
+                        throw error
+                    }
+                    rejections += 1
+                } else if !Self.leavesOutcomeUnknown(error) {
+                    throw error
+                }
+
+                // Past the deadline, a failed look gets one more try: a
+                // device waking from sleep often fails its first request.
+                if timing.now() >= deadline {
+                    guard !retriedLate else {
+                        throw SplatError.timeout
+                    }
+                    retriedLate = true
+                    try await timing.sleep(interval)
+                    continue
+                }
+
+                // An outage says nothing about a job that is already paid
+                // for and running: keep waiting, as long as the server asks.
+                let requested = (error as? SplatError)?.apiError?.retryAfter ?? 0
+                try await sleep(max(interval, requested), until: deadline)
+                continue
+            }
+
+            seen = true
+            lastSeen = timing.now()
+            rejections = 0
 
             // Report progress
-            onProgress?(scene.status, scene.processingPct)
+            await onProgress?(scene.status, scene.processingPct)
 
             // Check for terminal states
             switch scene.status {
             case .complete:
                 return scene
             case .failed:
-                throw SplatError.processingFailed(
-                    scene.processingError ?? scene.processingStage ?? "Processing failed."
-                )
+                throw SplatError.processingFailed(scene.failureMessage)
             case .cancelled:
                 throw SplatError.cancelled
+            case .uploading:
+                // Only a launch moves a scene past uploading, so no job exists.
+                uploadingSightings += 1
+                if uploadingSightings >= Self.uploadingSightingsForNotStarted {
+                    throw SplatError.notStarted
+                }
             default:
-                break
+                uploadingSightings = 0
             }
 
-            // Wait before next poll
-            try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+            // A poll after the deadline is the last one: a device that slept
+            // through the deadline still looks before calling it a timeout.
+            guard timing.now() < deadline else {
+                throw SplatError.timeout
+            }
+            try await sleep(interval, until: deadline)
         }
+    }
 
-        throw SplatError.timeout
+    /// Whether the API refused the read as unauthorized or not found.
+    static func isRejection(_ error: Error) -> Bool {
+        let status = (error as? SplatError)?.apiError?.statusCode
+        return status == HTTPStatus.unauthorized || status == HTTPStatus.notFound
+    }
+
+    /// Whether a failed status read leaves the job's outcome unknown, so
+    /// waiting goes on: network failures, 5xx, rate limits, and unreadable
+    /// responses. A rejected request (any other 4xx) or a URL that can't be
+    /// requested ends the wait.
+    static func leavesOutcomeUnknown(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return !fatalURLErrors.contains(urlError.code)
+        }
+        guard (error as? SplatError)?.apiError != nil else {
+            return true
+        }
+        return APIClient.isTransient(error)
+    }
+
+    /// Sleep for `seconds`, but never past `deadline`.
+    private func sleep(_ seconds: TimeInterval, until deadline: Date) async throws {
+        let remaining = deadline.timeIntervalSince(timing.now())
+        try await timing.sleep(max(0, min(seconds, remaining)))
+    }
+}
+
+// MARK: - Failure Message
+
+extension SplatScene {
+
+    /// Why the server says processing failed.
+    var failureMessage: String {
+        processingError ?? processingStage ?? "Processing failed."
     }
 }

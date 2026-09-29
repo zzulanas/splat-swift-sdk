@@ -11,6 +11,18 @@ final class MockURLProtocol: URLProtocol {
         let statusCode: Int
         let body: Data
         let headers: [String: String]
+        /// Fail the request with this transport error instead of responding.
+        var failure: URLError? = nil
+        /// Never answer; the request stays in flight until it is cancelled.
+        var hangs = false
+
+        /// A request that never gets a response, e.g. a dropped connection.
+        static func failure(_ code: URLError.Code) -> Stub {
+            Stub(statusCode: 0, body: Data(), headers: [:], failure: URLError(code))
+        }
+
+        /// A request the server never answers, so a test can cancel it mid-flight.
+        static let hang = Stub(statusCode: 0, body: Data(), headers: [:], hangs: true)
 
         /// A JSON response, optionally with extra headers such as `X-Request-Id`.
         static func json(_ statusCode: Int, _ body: String, headers: [String: String] = [:]) -> Stub {
@@ -104,6 +116,18 @@ final class MockURLProtocol: URLProtocol {
         let path = request.url?.path ?? ""
 
         if let stub = Self.nextStub(for: path) {
+            if stub.hangs {
+                return
+            }
+            if let failure = stub.failure {
+                // A real network failure names the URL that failed.
+                let named = URLError(failure.code, userInfo: [
+                    NSURLErrorFailingURLErrorKey: request.url!,
+                    NSURLErrorFailingURLStringErrorKey: request.url!.absoluteString,
+                ])
+                client?.urlProtocol(self, didFailWithError: named)
+                return
+            }
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: stub.statusCode,
@@ -142,20 +166,112 @@ final class MockURLProtocol: URLProtocol {
     }
 }
 
+// MARK: - Fake Clock
+
+/// Stands in for the real clock: sleeping records the delay and moves time
+/// forward instantly, and jitter always picks the longest delay.
+final class FakeClock: @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var current = Date(timeIntervalSince1970: 1_790_000_000)
+    private var slept: [TimeInterval] = []
+    private var cancelNextSleep = false
+
+    private var extraOnNextSleep: TimeInterval = 0
+
+    /// Move time `extra` further during the next sleep, as when a device
+    /// sleeps through a deadline.
+    func advanceOnNextSleep(by extra: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        extraOnNextSleep = extra
+    }
+
+    /// Cancel whichever task sleeps next, as if the user left mid-wait.
+    func cancelOnNextSleep() {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelNextSleep = true
+    }
+
+    /// Every delay slept so far, in order.
+    var sleeps: [TimeInterval] {
+        lock.lock()
+        defer { lock.unlock() }
+        return slept
+    }
+
+    var timing: Timing {
+        Timing(
+            now: { self.now() },
+            sleep: { seconds in try self.sleep(seconds) },
+            jitter: { range in range.upperBound }
+        )
+    }
+
+    private func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    private func sleep(_ seconds: TimeInterval) throws {
+        lock.lock()
+        let cancel = cancelNextSleep
+        cancelNextSleep = false
+        lock.unlock()
+
+        if cancel {
+            withUnsafeCurrentTask { $0?.cancel() }
+        }
+        try Task.checkCancellation()
+
+        lock.lock()
+        defer { lock.unlock() }
+        slept.append(seconds)
+        current += seconds + extraOnNextSleep
+        extraOnNextSleep = 0
+    }
+}
+
+// MARK: - Recorder
+
+/// Collects values from main-actor callbacks such as `onProgress`.
+@MainActor
+final class Recorder<Value> {
+
+    private(set) var values: [Value] = []
+
+    nonisolated init() {}
+
+    func record(_ value: Value) {
+        values.append(value)
+    }
+}
+
 // MARK: - Test Helpers
 
 extension SplatClientTests {
 
-    func makeClient() -> SplatClient {
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [MockURLProtocol.self]
-        let session = URLSession(configuration: config)
-
-        return SplatClient(
+    /// A client on the mock network whose retries and polling never wait.
+    func makeClient(
+        configuration: SplatClient.Configuration = .init(),
+        clock: FakeClock = FakeClock()
+    ) -> SplatClient {
+        SplatClient(
             apiKey: "s3d_test_key_12345",
             baseURL: URL(string: "https://api.splat-3d.com")!,
-            session: session
+            session: mockSession(),
+            configuration: configuration,
+            timing: clock.timing
         )
+    }
+
+    /// A session whose requests are answered by ``MockURLProtocol``.
+    func mockSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [MockURLProtocol.self]
+        return URLSession(configuration: config)
     }
 
     func mockJSON(_ value: String) -> Data {
@@ -279,7 +395,7 @@ final class SplatClientTests: XCTestCase {
 
         let scene = try await client.processScene(id: "abc123", arkitPoses: padded)
 
-        XCTAssertEqual(scene.id, "abc123")
+        XCTAssertEqual(scene.sceneID, "abc123")
         XCTAssertEqual(scene.status, .processing)
 
         // Verify the process request body contains ARKit poses

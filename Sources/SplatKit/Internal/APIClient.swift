@@ -7,8 +7,8 @@ import Foundation
 /// A failed HTTP response is ``unauthorized(_:)``, ``notFound(_:)``,
 /// ``rateLimited(_:)`` or ``requestFailed(_:)``, each carrying an
 /// ``APIError`` with the API's error code, message, HTTP status and request
-/// ID. Network failures are thrown as `URLError`; a cancelled task throws
-/// `CancellationError` or `URLError.cancelled`.
+/// ID. Network failures are thrown as `URLError`, and a cancelled task throws
+/// `CancellationError`.
 public enum SplatError: Error, LocalizedError, Sendable {
 
     /// The API key is missing, invalid, or revoked (HTTP 401).
@@ -33,7 +33,9 @@ public enum SplatError: Error, LocalizedError, Sendable {
     case decodingError(Error)
 
     /// The video upload failed without a response, e.g. the connection
-    /// dropped. An upload rejected with an error status is ``requestFailed(_:)``.
+    /// dropped, or before sending: the file is missing, unreadable or empty
+    /// (a `URLError` such as `.fileDoesNotExist` or `.zeroByteResource`). An
+    /// upload rejected with an error status is ``requestFailed(_:)``.
     case uploadFailed(Error)
 
     /// ``SplatScanner`` could not record, e.g. the device ran out of storage.
@@ -41,15 +43,33 @@ public enum SplatError: Error, LocalizedError, Sendable {
     /// such as an `AVError`.
     case captureFailed(Error)
 
-    /// Scene processing failed on the server.
+    /// Processing failed on the server.
+    ///
+    /// Usually final. Rarely, the pipeline completes a scene the stale-job
+    /// sweep had failed, so ``SplatClient/getScene(id:)`` has the last word.
     case processingFailed(String)
 
-    /// A polling operation exceeded the maximum wait time.
+    /// This client stopped waiting for processing after
+    /// ``SplatClient/Configuration/pollingTimeout``.
+    ///
+    /// Not a server-side failure: the job may still finish. Check again with
+    /// ``SplatClient/waitForScene(id:onProgress:)`` or ``SplatClient/getScene(id:)``.
     case timeout
 
     /// The scene was cancelled on the server, e.g. by ``SplatClient/cancelScene(id:)``.
-    /// A cancelled task throws `CancellationError` or `URLError.cancelled` instead.
+    /// A cancelled task throws `CancellationError` instead.
     case cancelled
+
+    /// Processing never started for this scene: its source was not uploaded,
+    /// or no ``SplatClient/processScene(id:arkitPoses:lidarPoints:enableLOD:idempotencyKey:)``
+    /// call went through. There is no job to wait for.
+    case notStarted
+
+    /// ``SplatClient/createAndProcess(videoURL:title:preset:arkitPoses:lidarPoints:onProgress:onSceneCreated:)``
+    /// stopped after creating its scene, before the outcome was known.
+    /// Continue with ``SplatClient/resume(_:onProgress:)``; the
+    /// ``Interruption`` says which step stopped and what was charged.
+    case interrupted(Interruption)
 
     public var errorDescription: String? {
         switch self {
@@ -71,9 +91,13 @@ public enum SplatError: Error, LocalizedError, Sendable {
         case .processingFailed(let message):
             return "Processing failed: \(message)"
         case .timeout:
-            return "Operation timed out."
+            return "Timed out waiting for processing. The scene may still finish."
         case .cancelled:
             return "The scene was cancelled."
+        case .notStarted:
+            return "Processing hasn't started for this scene."
+        case .interrupted(let interruption):
+            return interruption.summary
         }
     }
 
@@ -90,7 +114,9 @@ public enum SplatError: Error, LocalizedError, Sendable {
         switch self {
         case .unauthorized(let error), .notFound(let error), .rateLimited(let error), .requestFailed(let error):
             return error
-        case .decodingError, .uploadFailed, .captureFailed, .processingFailed, .timeout, .cancelled:
+        case .interrupted(let interruption):
+            return (interruption.underlying as? SplatError)?.apiError
+        case .decodingError, .uploadFailed, .captureFailed, .processingFailed, .timeout, .cancelled, .notStarted:
             return nil
         }
     }
@@ -381,9 +407,11 @@ enum HTTPMethod: String {
 /// HTTP status codes the client branches on (RFC 9110 §15).
 enum HTTPStatus {
     static let success = 200...299
+    static let badRequest = 400
     static let unauthorized = 401
     static let notFound = 404
     static let tooManyRequests = 429
+    static let clientError = 400...499
     static let serverError = 500...599
 }
 
@@ -394,6 +422,8 @@ enum HTTPHeader {
     static let userAgent = "User-Agent"
     static let requestID = "X-Request-Id"
     static let retryAfter = "Retry-After"
+    /// Lets the API replay a paid `process` call instead of charging twice.
+    static let idempotencyKey = "Idempotency-Key"
     /// Format the download endpoint actually served: `sog` or `ply`.
     static let splatFormat = "X-Splat-Format"
 
@@ -433,6 +463,27 @@ enum APIPath {
     )
 }
 
+// MARK: - Timestamps
+
+/// Parses API timestamps, with or without fractional seconds.
+///
+/// `ISO8601DateFormatter` is thread-safe but not marked `Sendable`; the
+/// decoder's date strategy runs as a `@Sendable` closure.
+final class TimestampParser: @unchecked Sendable {
+
+    private let fractional = ISO8601DateFormatter()
+    private let whole = ISO8601DateFormatter()
+
+    init() {
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        whole.formatOptions = [.withInternetDateTime]
+    }
+
+    func date(from string: String) -> Date? {
+        fractional.date(from: string) ?? whole.date(from: string)
+    }
+}
+
 // MARK: - APIClient
 
 /// Internal HTTP client for the Splat REST API.
@@ -446,11 +497,23 @@ final class APIClient: Sendable {
     let session: URLSession
     let decoder: JSONDecoder
     let encoder: JSONEncoder
+    let requestTimeout: TimeInterval
+    let maxRetries: Int
+    let timing: Timing
 
-    init(apiKey: String, baseURL: URL, session: URLSession = .shared) {
+    init(
+        apiKey: String,
+        baseURL: URL,
+        session: URLSession = .shared,
+        configuration: SplatClient.Configuration = .init(),
+        timing: Timing = .live
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.session = session
+        self.requestTimeout = configuration.requestTimeout
+        self.maxRetries = configuration.maxRetries
+        self.timing = timing
 
         let decoder = JSONDecoder()
         // Note: we do NOT use .convertFromSnakeCase here because SplatScene and other
@@ -458,17 +521,11 @@ final class APIClient: Sendable {
         // Using both would cause a double-conversion mismatch.
 
         // ISO 8601 with fractional seconds support
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        fallbackFormatter.formatOptions = [.withInternetDateTime]
+        let timestamps = TimestampParser()
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let string = try container.decode(String.self)
-            if let date = formatter.date(from: string) {
-                return date
-            }
-            if let date = fallbackFormatter.date(from: string) {
+            if let date = timestamps.date(from: string) {
                 return date
             }
             throw DecodingError.dataCorruptedError(
@@ -481,6 +538,9 @@ final class APIClient: Sendable {
 
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
+        // Same input, same bytes: a repeated launch body is identical, which
+        // makes replays easy to check (the API also canonicalizes it).
+        encoder.outputFormatting = .sortedKeys
         encoder.dateEncodingStrategy = .iso8601
         self.encoder = encoder
     }
@@ -496,7 +556,8 @@ final class APIClient: Sendable {
         path: String,
         method: HTTPMethod,
         query: [URLQueryItem] = [],
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        idempotencyKey: String? = nil
     ) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL),
               var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else {
@@ -516,10 +577,11 @@ final class APIClient: Sendable {
             throw URLError(.badURL)
         }
 
-        var request = URLRequest(url: resolved)
+        var request = URLRequest(url: resolved, timeoutInterval: requestTimeout)
         request.httpMethod = method.rawValue
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: HTTPHeader.authorization)
         request.setValue(HTTPHeader.userAgentValue, forHTTPHeaderField: HTTPHeader.userAgent)
+        request.setValue(idempotencyKey, forHTTPHeaderField: HTTPHeader.idempotencyKey)
 
         if let body {
             request.setValue(HTTPHeader.jsonContentType, forHTTPHeaderField: HTTPHeader.contentType)
@@ -532,14 +594,19 @@ final class APIClient: Sendable {
     // MARK: - Request Execution
 
     /// Execute a request and decode the response envelope, returning `data`.
+    ///
+    /// GETs, and requests with an `idempotencyKey`, are retried on transient
+    /// failures (see ``withRetries(for:_:)``).
     func request<T: Decodable>(
         _ type: T.Type,
         path: String,
         method: HTTPMethod,
-        body: (any Encodable)? = nil
+        body: (any Encodable)? = nil,
+        idempotencyKey: String? = nil,
+        retry policy: RetryPolicy = .automatic
     ) async throws -> T {
-        let urlRequest = try buildRequest(path: path, method: method, body: body)
-        let (data, _) = try await send(urlRequest)
+        let urlRequest = try buildRequest(path: path, method: method, body: body, idempotencyKey: idempotencyKey)
+        let (data, _) = try await send(urlRequest, retry: policy)
         return try decode(APIResponse<T>.self, from: data).data
     }
 
@@ -570,39 +637,47 @@ final class APIClient: Sendable {
     /// Stream a GET response body to a temporary file the caller must move.
     func download(path: String, query: [URLQueryItem]) async throws -> (URL, HTTPURLResponse) {
         let urlRequest = try buildRequest(path: path, method: .get, query: query)
-        let (fileURL, response) = try await session.download(for: urlRequest)
-        let httpResponse = try httpResponse(response)
 
-        guard HTTPStatus.success.contains(httpResponse.statusCode) else {
-            // Error bodies land in the file too; read the envelope, then discard it.
-            let body = (try? Data(contentsOf: fileURL)) ?? Data()
-            try? FileManager.default.removeItem(at: fileURL)
-            throw failure(for: httpResponse, body: body)
+        return try await withRetries(for: urlRequest) {
+            let (fileURL, response) = try await session.download(for: urlRequest)
+            let httpResponse = try httpResponse(response)
+
+            guard HTTPStatus.success.contains(httpResponse.statusCode) else {
+                // Error bodies land in the file too; read the envelope, then discard it.
+                let body = (try? Data(contentsOf: fileURL)) ?? Data()
+                try? FileManager.default.removeItem(at: fileURL)
+                throw failure(for: httpResponse, body: body)
+            }
+
+            return (fileURL, httpResponse)
         }
-
-        return (fileURL, httpResponse)
     }
 
-    /// Send a request and return the body of a 2xx response.
+    /// Send a request and return the body of a 2xx response, retrying
+    /// transient failures when the request is safe to repeat.
     ///
     /// - Throws: ``SplatError`` for any other status; `URLError` when the
     ///   request never got a response.
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = try httpResponse(response)
+    func send(_ request: URLRequest, retry policy: RetryPolicy = .automatic) async throws -> (Data, HTTPURLResponse) {
+        try await withRetries(for: request, policy: policy) {
+            let (data, response) = try await session.data(for: request)
+            let httpResponse = try httpResponse(response)
 
-        guard HTTPStatus.success.contains(httpResponse.statusCode) else {
-            throw failure(for: httpResponse, body: data)
+            guard HTTPStatus.success.contains(httpResponse.statusCode) else {
+                throw failure(for: httpResponse, body: data)
+            }
+
+            return (data, httpResponse)
         }
-
-        return (data, httpResponse)
     }
 
     // MARK: - Upload
 
     /// Upload a file to a presigned URL with a raw PUT request.
     func uploadFile(from fileURL: URL, to uploadURL: URL, contentType: String = "video/mp4") async throws {
-        var request = URLRequest(url: uploadURL)
+        try Self.checkUploadable(fileURL)
+
+        var request = URLRequest(url: uploadURL, timeoutInterval: requestTimeout)
         request.httpMethod = HTTPMethod.put.rawValue
         request.setValue(contentType, forHTTPHeaderField: HTTPHeader.contentType)
         request.setValue(HTTPHeader.userAgentValue, forHTTPHeaderField: HTTPHeader.userAgent)
@@ -621,7 +696,42 @@ final class APIClient: Sendable {
         } catch let error as SplatError {
             throw error
         } catch {
+            // A cancelled task stops the upload; report it as Swift reports cancellation.
+            if Task.isCancelled || error is CancellationError {
+                throw CancellationError()
+            }
             throw SplatError.uploadFailed(error)
+        }
+    }
+
+    /// Refuse a file that isn't there to send. URLSession would PUT a missing
+    /// or empty file as a 0-byte body, which storage accepts, and a launch
+    /// after it would be charged for an empty video.
+    ///
+    /// - Throws: ``SplatError/uploadFailed(_:)`` with a `URLError`:
+    ///   `.fileDoesNotExist`, `.noPermissionsToReadFile`, `.fileIsDirectory`
+    ///   or `.zeroByteResource`.
+    static func checkUploadable(_ fileURL: URL) throws {
+        func unsendable(_ code: URLError.Code) -> SplatError {
+            .uploadFailed(URLError(code, userInfo: [NSURLErrorFailingURLErrorKey: fileURL]))
+        }
+
+        // FileManager, not URL.resourceValues: a URL caches those, so a file
+        // deleted since the URL was last checked would still look present.
+        let files = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard files.fileExists(atPath: fileURL.path, isDirectory: &isDirectory) else {
+            throw unsendable(.fileDoesNotExist)
+        }
+        if isDirectory.boolValue {
+            throw unsendable(.fileIsDirectory)
+        }
+        if !files.isReadableFile(atPath: fileURL.path) {
+            throw unsendable(.noPermissionsToReadFile)
+        }
+        let size = (try? files.attributesOfItem(atPath: fileURL.path))?[.size] as? Int ?? 0
+        if size == 0 {
+            throw unsendable(.zeroByteResource)
         }
     }
 
@@ -645,7 +755,7 @@ final class APIClient: Sendable {
 
     /// Map a non-2xx response to the ``SplatError`` case for its status.
     private func failure(for response: HTTPURLResponse, body: Data) -> SplatError {
-        let error = SplatError.APIError(response: response, body: body, decoder: decoder)
+        let error = SplatError.APIError(response: response, body: body, decoder: decoder, now: timing.now())
 
         switch response.statusCode {
         case HTTPStatus.unauthorized:
