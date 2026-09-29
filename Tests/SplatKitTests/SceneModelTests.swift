@@ -50,7 +50,7 @@ extension SplatClientTests {
 
     func testFallbackViewerURLUsesTourRoute() async throws {
         // /s/{id} was retired; it now returns 404 on splat-3d.com.
-        let scene = Scene(id: "local", status: .complete)
+        let scene = SplatScene(id: "local", status: .complete)
         XCTAssertEqual(scene.viewerURL?.absoluteString, "https://splat-3d.com/tour/local")
     }
 
@@ -116,7 +116,7 @@ extension SplatClientTests {
     static let terminalStatuses = ["complete", "failed", "cancelled"]
 
     /// Decode a scene whose `status` is `raw`.
-    func scene(withStatus raw: String) async throws -> Scene {
+    func scene(withStatus raw: String) async throws -> SplatScene {
         MockURLProtocol.mockResponses["/v1/scenes/status-\(raw)"] =
             (200, scenePayload(id: "status-\(raw)", status: raw))
         return try await makeClient().getScene(id: "status-\(raw)")

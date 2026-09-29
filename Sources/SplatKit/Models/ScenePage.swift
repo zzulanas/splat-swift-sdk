@@ -6,7 +6,7 @@ import Foundation
 public struct ScenePage: Sendable, Equatable {
 
     /// Scenes on this page, newest first.
-    public let scenes: [Scene]
+    public let scenes: [SplatScene]
 
     /// Cursor for the next page, or `nil` on the last page.
     ///
@@ -18,7 +18,7 @@ public struct ScenePage: Sendable, Equatable {
     public let hasMore: Bool
 
     /// Create a page, e.g. for a test double.
-    public init(scenes: [Scene], nextCursor: String?, hasMore: Bool) {
+    public init(scenes: [SplatScene], nextCursor: String?, hasMore: Bool) {
         self.scenes = scenes
         self.nextCursor = nextCursor
         self.hasMore = hasMore

@@ -8,7 +8,7 @@ actor ScenePager {
 
     private let client: SplatClient
     private let pageSize: Int?
-    private var buffered: [Scene] = []
+    private var buffered: [SplatScene] = []
     private var cursor: String?
     private var exhausted = false
 
@@ -18,7 +18,7 @@ actor ScenePager {
     }
 
     /// The next scene, or `nil` after the last page.
-    func next() async throws -> Scene? {
+    func next() async throws -> SplatScene? {
         while buffered.isEmpty {
             guard !exhausted else {
                 return nil

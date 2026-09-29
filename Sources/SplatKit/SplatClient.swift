@@ -270,11 +270,11 @@ public final class SplatClient: Sendable {
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
         enableLOD: Bool = false
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         let body = ProcessSceneBody(enableLOD: enableLOD, arkitPoses: arkitPoses, lidarPoints: lidarPoints)
 
         // The process endpoint returns { status, sceneId, message }
-        // but we want to return a full Scene, so we fetch it after triggering
+        // but we want to return a full SplatScene, so we fetch it after triggering
         let _: ProcessSceneData = try await api.request(
             ProcessSceneData.self,
             path: APIPath.scene(id, .process),
@@ -295,8 +295,8 @@ public final class SplatClient: Sendable {
     /// - Parameter id: The scene ID.
     /// - Returns: The scene with current status.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
-    public func getScene(id: String) async throws -> Scene {
-        try await api.request(Scene.self, path: APIPath.scene(id), method: .get)
+    public func getScene(id: String) async throws -> SplatScene {
+        try await api.request(SplatScene.self, path: APIPath.scene(id), method: .get)
     }
 
     // MARK: - List Scenes
@@ -308,7 +308,7 @@ public final class SplatClient: Sendable {
     /// - Returns: The scenes on the first page.
     /// - Throws: ``SplatError`` on network or API errors.
     @available(*, deprecated, message: "Returns only the first page. Use listScenePage(cursor:limit:) or allScenes(pageSize:).")
-    public func listScenes() async throws -> [Scene] {
+    public func listScenes() async throws -> [SplatScene] {
         try await listScenePage().scenes
     }
 
@@ -336,7 +336,7 @@ public final class SplatClient: Sendable {
             query.append(URLQueryItem(name: "limit", value: String(limit)))
         }
 
-        let page = try await api.requestPage(Scene.self, path: APIPath.scenes, query: query)
+        let page = try await api.requestPage(SplatScene.self, path: APIPath.scenes, query: query)
         return ScenePage(scenes: page.data, nextCursor: page.meta.nextCursor, hasMore: page.meta.hasMore)
     }
 
@@ -372,14 +372,14 @@ public final class SplatClient: Sendable {
     ///   - id: The scene ID.
     ///   - update: The fields to change.
     /// - Returns: The updated scene. It is built from the stored record, so
-    ///   ``Scene/downloadURL`` and ``Scene/format`` are `nil`; use
+    ///   ``SplatScene/downloadURL`` and ``SplatScene/format`` are `nil`; use
     ///   ``getScene(id:)`` for those.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene doesn't exist.
     ///   ``SplatError/requestFailed(_:)`` with code `invalid_input` if `update`
     ///   sets no fields.
-    public func updateScene(id: String, _ update: SceneUpdate) async throws -> Scene {
+    public func updateScene(id: String, _ update: SceneUpdate) async throws -> SplatScene {
         try await api.request(
-            Scene.self,
+            SplatScene.self,
             path: APIPath.scene(id),
             method: .patch,
             body: UpdateSceneBody(update)
@@ -543,7 +543,7 @@ public final class SplatClient: Sendable {
         arkitPoses: [ARKitPose]? = nil,
         lidarPoints: [[Float]]? = nil,
         onProgress: ((SceneStatus, Double?) -> Void)? = nil
-    ) async throws -> Scene {
+    ) async throws -> SplatScene {
         // 1. Create scene
         let (sceneId, uploadURL) = try await createScene(title: title, preset: preset)
 

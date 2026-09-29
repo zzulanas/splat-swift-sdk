@@ -6,6 +6,11 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 
 ### Breaking changes
 
+- `Scene` is renamed `SplatScene`. SwiftUI and RealityKit declare `Scene`
+  too, so a file that imported either beside SplatKit couldn't use the name
+  unqualified: an app's `var body: some Scene` failed to compile there.
+  Write `SplatScene` wherever you name the type. There is no `Scene` alias,
+  because an alias would keep the ambiguity.
 - HTTP errors carry a `SplatError.APIError` with the HTTP status, the API's
   error `code`, `message`, `requestID` and `retryAfter`, and `.serverError` is
   renamed `.requestFailed`. It covers the same statuses as before (every
@@ -57,8 +62,8 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
   cancelled task ends the walk with `CancellationError`, so a finished loop
   always saw every scene.
 - `ModelFormat`, an open set like `SceneStatus`, for downloads and
-  `Scene.format`. A format the API adds later keeps its name, and a download
-  of it gets that file extension.
+  `SplatScene.format`. A format the API adds later keeps its name, and a
+  download of it gets that file extension.
 - Public initializers on `ScenePage`, `Usage` and `Usage.Limits` for test
   doubles.
 - `SplatError.apiError` reads the failed response behind any HTTP error.
@@ -67,8 +72,8 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - `lidarPoints` on `processScene` and `createAndProcess`, and
   `CaptureResult.lidarPoints` from `SplatScanner` on LiDAR devices.
 - `SplatScanner.session` and `totalFrameCount` for live preview UIs.
-- `Scene` decodes `processingError`, `viewerURL`, `downloadURL` and `format`
-  from the API, and unknown statuses decode instead of failing.
+- `SplatScene` decodes `processingError`, `viewerURL`, `downloadURL` and
+  `format` from the API, and unknown statuses decode instead of failing.
 - The SplatCapture example app, and macOS CI for the package and the example.
 
 ### Changed
@@ -103,10 +108,10 @@ All notable changes to SplatKit. Versions follow [Semantic Versioning](https://s
 - Viewer URLs pointed at the retired `splat-3d.com/s/{id}` route, which returns
   404; they now use `/tour/{id}`.
 - `preview_ready` decodes as an in-progress status instead of failing.
-- `Scene.isProcessing` is true for every non-terminal status. It was false for
-  `estimating_poses` and the `preview_*` stages the pipeline writes.
-- `Scene.downloadURL`'s documentation: the URL needs the API key, and serves
-  SOG unless `?format=ply` is passed.
+- `SplatScene.isProcessing` is true for every non-terminal status. It was
+  false for `estimating_poses` and the `preview_*` stages the pipeline writes.
+- `SplatScene.downloadURL`'s documentation: the URL needs the API key, and
+  serves SOG unless `?format=ply` is passed.
 
 ## 0.1.0
 

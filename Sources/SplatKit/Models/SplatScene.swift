@@ -73,7 +73,7 @@ public struct SceneStatus: RawRepresentable, Hashable, Codable, Sendable, CaseIt
     /// Processing completed successfully.
     public static let complete = SceneStatus(rawValue: "complete")
 
-    /// Processing failed. Check ``Scene/processingError`` for details.
+    /// Processing failed. Check ``SplatScene/processingError`` for details.
     public static let failed = SceneStatus(rawValue: "failed")
 
     /// Processing was cancelled.
@@ -112,7 +112,7 @@ public struct SceneStatus: RawRepresentable, Hashable, Codable, Sendable, CaseIt
     }
 }
 
-// MARK: - Scene
+// MARK: - SplatScene
 
 /// A 3D Gaussian Splat scene.
 ///
@@ -125,7 +125,7 @@ public struct SceneStatus: RawRepresentable, Hashable, Codable, Sendable, CaseIt
 ///     print("View at: \(scene.viewerURL!)")
 /// }
 /// ```
-public struct Scene: Codable, Identifiable, Sendable, Equatable {
+public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
 
     /// Unique scene identifier.
     public let id: String
@@ -235,7 +235,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         // Build thumbnail URL from the scene ID (API route, not R2 key), on
         // the deployment the scene came from.
         if thumbnailR2Key != nil {
-            let apiBase = decoder.userInfo[.splatBaseURL] as? URL ?? Scene.productionAPI
+            let apiBase = decoder.userInfo[.splatBaseURL] as? URL ?? SplatScene.productionAPI
             thumbnailURL = apiBase.appendingPathComponent("v1/scenes/\(id)/thumbnail")
         } else {
             thumbnailURL = nil
@@ -243,7 +243,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
 
         // Prefer server-provided viewer URL; fall back to local construction for backwards compat
         let serverViewerURL = try container.decodeIfPresent(URL.self, forKey: .viewerURLKey)
-        viewerURL = serverViewerURL ?? Scene.fallbackViewerURL(id: id, status: status)
+        viewerURL = serverViewerURL ?? SplatScene.fallbackViewerURL(id: id, status: status)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -294,7 +294,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
         self.thumbnailURL = thumbnailURL
         self.thumbnailR2Key = thumbnailURL != nil ? "scenes/\(id)/thumbnail.jpg" : nil
         self.processingError = processingError
-        self.viewerURL = viewerURL ?? Scene.fallbackViewerURL(id: id, status: status)
+        self.viewerURL = viewerURL ?? SplatScene.fallbackViewerURL(id: id, status: status)
         self.downloadURL = downloadURL
         self.format = format
         self.createdAt = createdAt
@@ -302,7 +302,7 @@ public struct Scene: Codable, Identifiable, Sendable, Equatable {
     }
 
     /// Equatable conformance (ignores derived thumbnailURL — compares all stored properties).
-    public static func == (lhs: Scene, rhs: Scene) -> Bool {
+    public static func == (lhs: SplatScene, rhs: SplatScene) -> Bool {
         lhs.id == rhs.id
             && lhs.title == rhs.title
             && lhs.address == rhs.address
@@ -328,7 +328,7 @@ extension CodingUserInfoKey {
     static let splatBaseURL = CodingUserInfoKey(rawValue: "SplatKit.baseURL")!
 }
 
-extension Scene {
+extension SplatScene {
 
     /// Thumbnail host when a scene is decoded outside ``SplatClient``.
     fileprivate static let productionAPI = URL(string: "https://api.splat-3d.com")!
@@ -336,7 +336,7 @@ extension Scene {
 
 // MARK: - Viewer URL
 
-extension Scene {
+extension SplatScene {
     /// Public viewer route on splat-3d.com. The older `/s/{id}` route was
     /// retired and now returns 404.
     private static let viewerBase = "https://splat-3d.com/tour/"

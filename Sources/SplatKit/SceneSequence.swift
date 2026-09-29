@@ -10,7 +10,7 @@ import Foundation
 /// finishing early, so a partial list can't pass for a complete one.
 public struct SceneSequence: AsyncSequence, Sendable {
 
-    public typealias Element = Scene
+    public typealias Element = SplatScene
 
     private let client: SplatClient
     private let pageSize: Int?
@@ -35,7 +35,7 @@ public struct SceneSequence: AsyncSequence, Sendable {
             self.pager = pager
         }
 
-        public mutating func next() async throws -> Scene? {
+        public mutating func next() async throws -> SplatScene? {
             // Checked before every scene, buffered or not: a stream that just
             // stops would look like the last page.
             try Task.checkCancellation()
