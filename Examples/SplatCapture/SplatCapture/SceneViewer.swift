@@ -48,7 +48,7 @@ struct SceneViewerScreen: View {
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .task { await model.load() }
-        .onDisappear { model.discardFile() }
+        .onDisappear { model.close() }
     }
 
     @ViewBuilder
@@ -78,7 +78,7 @@ struct SceneViewerScreen: View {
             VStack(spacing: 16) {
                 Notice(symbol: "exclamationmark.triangle", title: failure.title, detail: failure.detail)
                 Button("Try Again") {
-                    Task { await model.load() }
+                    Task { await model.retry() }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -195,12 +195,35 @@ final class SceneViewerModel: ObservableObject {
 
     private let sceneID: String
     private var file: URL?
+    /// Bumped by every load and by the screen closing. A download that lands
+    /// after a bump is stale, and is deleted at once.
+    private var generation = 0
 
     init(sceneID: String) {
         self.sceneID = sceneID
     }
 
+    /// Try Again. A file still on disk is one SplatKit refused: hand it over
+    /// again, since a new download would bring the same bytes.
+    func retry() async {
+        guard let file else {
+            await load()
+            return
+        }
+        worldReady = false
+        stats = nil
+        phase = .showing(file: file, bytes: Self.size(of: file))
+    }
+
+    /// The screen went away. A retry's download may still land later.
+    func close() {
+        generation += 1
+        discardFile()
+    }
+
     func load() async {
+        generation += 1
+        let current = generation
         discardFile()
         worldReady = false
         stats = nil
@@ -229,6 +252,13 @@ final class SceneViewerModel: ObservableObject {
 
         do {
             let downloaded = try await client.downloadScene(id: sceneID, format: spzFormat)
+
+            // A retry outlives its screen: once it closed, or a newer load
+            // began, nothing will show this file.
+            guard current == generation else {
+                try? FileManager.default.removeItem(at: downloaded)
+                return
+            }
 
             // The extension is the format the server actually sent.
             guard downloaded.pathExtension == spzFormat.rawValue else {
@@ -264,7 +294,7 @@ final class SceneViewerModel: ObservableObject {
 
     /// Deletes the download. Safe while SplatKit still maps it: the mapping
     /// keeps the bytes until it lets go.
-    func discardFile() {
+    private func discardFile() {
         guard let file else {
             return
         }

@@ -202,6 +202,7 @@ extension SplatWorldView {
         func detach() {
             statsTimer?.invalidate()
             statsTimer = nil
+            view?.delegate = nil
             view = nil
         }
 
@@ -339,7 +340,10 @@ extension SplatWorldView {
         }
 
         @objc private func publishStats() {
+            // The view is gone: stop, as the timer keeps this coordinator alive.
             guard let view else {
+                statsTimer?.invalidate()
+                statsTimer = nil
                 return
             }
             onEvent(.stats(view.readStats()))
