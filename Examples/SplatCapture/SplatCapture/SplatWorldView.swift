@@ -9,6 +9,7 @@ import SplatKit
 // with Metal in a UIKit view, SplatMetalView. This file puts it in SwiftUI:
 //
 //   SwiftUI state ──> updateUIView ──> Coordinator ──> resume/pause, mode, walking
+//                                 └──> SplatContainerView ──> flip
 //   SplatMetalView ──> SplatViewDelegate ──> Coordinator ──> onEvent ──> SwiftUI
 //   pan + pinch on the view ──> Coordinator ──> cameraPose (Orbit mode)
 //
@@ -55,29 +56,61 @@ struct SplatWorldView: UIViewRepresentable {
         Coordinator(onEvent: onEvent)
     }
 
-    func makeUIView(context: Context) -> SplatMetalView {
-        let view = SplatMetalView()
-        context.coordinator.attach(to: view)
-        view.loadWorld(file: file)
-        return view
+    func makeUIView(context: Context) -> SplatContainerView {
+        let container = SplatContainerView()
+        context.coordinator.attach(to: container.splatView)
+        container.splatView.loadWorld(file: file)
+        return container
     }
 
-    func updateUIView(_ view: SplatMetalView, context: Context) {
+    func updateUIView(_ container: SplatContainerView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onEvent = onEvent
         coordinator.setActive(isActive)
         coordinator.setMode(mode)
         coordinator.setWalkSpeed(walkSpeed)
         coordinator.reset(to: resetCount)
-
-        // Touches turn with the view, so drags still follow the picture.
-        view.transform = flipped ? CGAffineTransform(rotationAngle: .pi) : .identity
+        container.flipped = flipped
     }
 
     /// SplatKit's lifecycle: `release()` once the view is gone for good.
-    static func dismantleUIView(_ view: SplatMetalView, coordinator: Coordinator) {
+    static func dismantleUIView(_ container: SplatContainerView, coordinator: Coordinator) {
         coordinator.detach()
-        view.release()
+        container.splatView.release()
+    }
+}
+
+// MARK: - SplatContainerView
+
+/// Holds SplatKit's view so it can be turned. SwiftUI sets the frame of the
+/// view it hosts, and a frame is undefined under a transform, so the
+/// transform goes on this child, laid out by bounds and center instead.
+final class SplatContainerView: UIView {
+
+    let splatView = SplatMetalView()
+
+    /// Half a turn on screen. Touches turn with the view, so drags still
+    /// follow the picture.
+    var flipped = false {
+        didSet {
+            splatView.transform = flipped ? CGAffineTransform(rotationAngle: .pi) : .identity
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        addSubview(splatView)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("SplatContainerView is built in code")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        splatView.bounds = CGRect(origin: .zero, size: bounds.size)
+        splatView.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
 }
 
