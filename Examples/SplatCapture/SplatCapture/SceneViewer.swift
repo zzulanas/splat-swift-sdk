@@ -1,5 +1,4 @@
 import SwiftUI
-import Metal
 import Splat3D
 import SplatKit
 
@@ -59,21 +58,21 @@ struct SceneViewerScreen: View {
             DownloadProgress(received: received, expected: expected)
 
         case .showing(let file, let bytes):
-            if SceneViewerModel.canRender {
-                world(file)
-                    .overlay {
-                        if !model.worldReady {
-                            Notice(symbol: nil, title: "Loading into SplatKit…", detail: bytes.formatted(.byteCount(style: .file)))
-                        }
+            world(file)
+                .overlay {
+                    if !model.worldReady {
+                        Notice(symbol: nil, title: "Loading into SplatKit…", detail: bytes.formatted(.byteCount(style: .file)))
                     }
-            } else {
-                Notice(
-                    symbol: "iphone.slash",
-                    title: "Downloaded, but not drawn here",
-                    detail: "Got \(bytes.formatted(.byteCount(style: .file))) of SPZ. SplatKit draws only on a physical "
-                        + "iPhone with an A14 chip or newer (Apple GPU family 7). The Simulator doesn't have one."
-                )
-            }
+                }
+
+        case .undrawable(let bytes):
+            Notice(
+                symbol: "iphone.slash",
+                title: "Downloaded, but not drawn here",
+                detail: "Got \(bytes.formatted(.byteCount(style: .file))) of SPZ, but SplatKit couldn't start Metal. "
+                    + "It needs a physical device with an A14 or M1 chip or newer (Apple GPU family 7), so the "
+                    + "Simulator never draws; on such a device, its Metal setup failed."
+            )
 
         case .failed(let failure):
             VStack(spacing: 16) {
@@ -170,6 +169,8 @@ final class SceneViewerModel: ObservableObject {
         case downloading(received: Int64, expected: Int64?)
         /// The file is on disk, and SplatKit is loading or showing it.
         case showing(file: URL, bytes: Int64)
+        /// The file is on disk, but SplatKit can't draw on this device.
+        case undrawable(bytes: Int64)
         case failed(ViewerFailure)
     }
 
@@ -177,10 +178,6 @@ final class SceneViewerModel: ObservableObject {
     /// The world's first frame is on screen.
     @Published private(set) var worldReady = false
     @Published private(set) var stats: SplatStats?
-
-    /// SplatKit draws only on Apple GPU family 7, A14 or newer (MetalSplatRenderer::create).
-    /// The Simulator doesn't report it, so there the file downloads but isn't drawn.
-    static let canRender = MTLCreateSystemDefaultDevice()?.supportsFamily(.apple7) ?? false
 
     private static let progressInterval: Duration = .milliseconds(250)
 
@@ -239,6 +236,11 @@ final class SceneViewerModel: ObservableObject {
 
     func handle(_ event: WorldEvent) {
         switch event {
+        case .unavailable:
+            guard case .showing(_, let bytes) = phase else {
+                return
+            }
+            phase = .undrawable(bytes: bytes)
         case .ready:
             worldReady = true
         case .failed(let message):

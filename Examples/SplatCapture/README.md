@@ -41,8 +41,10 @@ processing, then shows the result natively with
 The app will show an error if you try to run on a device without LiDAR.
 
 **View in 3D** draws with Metal on Apple GPU family 7: A14, M1 or newer, on a
-physical device. The Simulator doesn't report family 7, so there the app
-downloads the scene and says it can't draw it.
+physical device. The app goes by SplatKit's `SplatMetalView.isAvailable`,
+which is also false when SplatKit's Metal setup fails (shader compile, command
+queue or buffers). Where it's false, as in the Simulator, the app downloads
+the scene and says it can't draw it.
 
 ## Usage
 

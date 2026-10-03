@@ -28,6 +28,10 @@ enum NavigationMode: String, CaseIterable, Identifiable {
 
 /// What the view tells SwiftUI.
 enum WorldEvent {
+    /// SplatKit couldn't bring up Metal, so this view will never draw: the
+    /// Simulator, a GPU before Apple family 7 (A14, M1), or a failed shader
+    /// compile, command queue or buffer.
+    case unavailable
     /// The world's first frame is on screen.
     case ready(splats: Int)
     /// SplatKit couldn't read the file, or the GPU refused the world.
@@ -58,6 +62,14 @@ struct SplatWorldView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> SplatContainerView {
         let container = SplatContainerView()
+
+        // Without Metal, every SplatKit call is a no-op and no event ever
+        // arrives: waiting for the first frame would wait forever.
+        guard container.splatView.isAvailable else {
+            context.coordinator.reportUnavailable()
+            return container
+        }
+
         context.coordinator.attach(to: container.splatView)
         container.splatView.loadWorld(file: file)
         return container
@@ -191,6 +203,14 @@ extension SplatWorldView {
             statsTimer?.invalidate()
             statsTimer = nil
             view = nil
+        }
+
+        /// Tells SwiftUI once this view update is over: makeUIView runs
+        /// inside it, where state mustn't change.
+        func reportUnavailable() {
+            Task {
+                onEvent(.unavailable)
+            }
         }
 
         // MARK: SwiftUI state
