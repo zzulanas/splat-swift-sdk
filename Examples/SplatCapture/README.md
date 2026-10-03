@@ -82,18 +82,25 @@ What can go wrong, and what the app says:
 - **SPZ download not available on this server yet**: the API rejects
   `format=spz` (a 400 naming `format`) until it serves SPZ downloads.
 - **SplatKit couldn't load this scene**: SplatKit refused the file. Its
-  message follows.
+  message follows. "SPZ payload exceeds the decoded size ceiling" means the
+  scene is too big for SplatKit: it accepts at most 768 MiB unpacked, and
+  counts a Splat3D SPZ (version 4) at 236 B per splat with degree-3 spherical
+  harmonics, the pipeline's default. That's about 3.4M splats; **Recent
+  Scenes** shows each scene's count.
 
 ### Which way is up
 
-Splat3D's pipeline turns every scene so +Y is up, the convention of
-PlayCanvas, three.js and SuperSplat, and writes the SPZ with those coordinates
-as they are. SplatKit has no orientation setting: it reads every SPZ as World
-Labs files are laid out, +Y down, and turns it half a turn about X. Splat3D
-scenes would come out upside down, so the viewer starts with **Flip** on,
-which rotates the picture half a turn on screen. Touches turn with it, so
-dragging still follows the picture. Turn **Flip** off to see SplatKit's own
-orientation.
+SplatKit has no orientation setting: it reads every SPZ as World Labs files
+are laid out, +Y down, and turns it half a turn about X. Splat3D's pipeline
+turns scenes made from a video or photos without ARKit poses so +Y is up, the
+convention of PlayCanvas, three.js and SuperSplat, and writes the SPZ with
+those coordinates as they are. Those would come out upside down, so the viewer
+starts with **Flip** on, which rotates the picture half a turn on screen.
+Touches turn with it, so dragging still follows the picture. Turn **Flip** off
+to see SplatKit's own orientation.
+
+Scenes captured with ARKit poses, as this app's are, can come out about 90°
+off, which **Flip** can't correct. Why is under investigation.
 
 ## How It Works
 
