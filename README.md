@@ -221,4 +221,4 @@ Get your API key from the [Splat dashboard](https://splat-3d.com/dashboard). Key
 
 ## License
 
-MIT
+[MIT](LICENSE)

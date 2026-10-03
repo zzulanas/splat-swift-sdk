@@ -171,6 +171,7 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
 - `SplatScene` decodes `processingError`, `viewerURL`, `downloadURL` and
   `format` from the API, and unknown statuses decode instead of failing.
 - The SplatCapture example app, and macOS CI for the package and the example.
+- An MIT license, in `LICENSE`.
 
 ### Changed
 
