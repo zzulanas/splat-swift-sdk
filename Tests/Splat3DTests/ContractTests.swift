@@ -130,6 +130,14 @@ final class ContractTests: XCTestCase {
             "undeclared error.issues",
             "undeclared error.name",
         ]),
+        FixtureCase("unknownFormat", Fixture.unknownFormat, "downloadScene", 400, deviations: [
+            "missing error.code",
+            "missing error.message",
+            "missing meta",
+            "undeclared success",
+            "undeclared error.issues",
+            "undeclared error.name",
+        ]),
     ]
 
     /// Statuses the fixtures use that the spec does not document for that
@@ -143,6 +151,7 @@ final class ContractTests: XCTestCase {
         "processScene 400",  // source not in storage, or duplicate pose paths (processScene)
         "getScene 500",      // any unhandled error (errorHandler)
         "listScenes 400",    // `limit` outside 1–100 (route validation)
+        "downloadScene 400", // a `format` the route doesn't accept (route validation)
     ]
 
     func testSDKCoversEveryOperation() throws {
@@ -166,6 +175,16 @@ final class ContractTests: XCTestCase {
         }
 
         XCTAssertEqual(undocumented, Self.undocumentedStatuses)
+    }
+
+    /// ModelFormat names exactly the formats downloadScene accepts. A format
+    /// gets a name when the refreshed spec lists it, and not before: until
+    /// then, callers pass `ModelFormat(rawValue:)`.
+    func testModelFormatsMatchTheDownloadFormats() throws {
+        let accepted = try PinnedSpec.load().queryValues("downloadScene", parameter: "format")
+
+        XCTAssertFalse(accepted.isEmpty)
+        XCTAssertEqual(Set(ModelFormat.allCases.map(\.rawValue)), Set(accepted))
     }
 }
 
@@ -209,6 +228,14 @@ struct PinnedSpec {
         let content = response?["content"] as? [String: Any]
         let json = content?["application/json"] as? [String: Any]
         return json?["schema"] as? [String: Any]
+    }
+
+    /// The values an operation's query parameter allows, from its `enum`.
+    func queryValues(_ operationID: String, parameter name: String) -> [String] {
+        let parameters = operations[operationID]?["parameters"] as? [[String: Any]] ?? []
+        let parameter = parameters.first { $0["name"] as? String == name && $0["in"] as? String == "query" }
+        let schema = parameter?["schema"] as? [String: Any]
+        return schema?["enum"] as? [String] ?? []
     }
 
     /// A reference to a named component schema.
