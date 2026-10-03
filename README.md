@@ -1,4 +1,4 @@
-# SplatKit
+# Splat3D
 
 Swift SDK for the [Splat](https://splat-3d.com) 3D Gaussian Splatting API. Turn video into interactive 3D scenes with native ARKit camera pose capture.
 
@@ -10,21 +10,29 @@ Swift SDK for the [Splat](https://splat-3d.com) 3D Gaussian Splatting API. Turn 
 
 ## Installation
 
-Add SplatKit to your project using Swift Package Manager:
+Add Splat3D to your project using Swift Package Manager:
 
 ```swift
 // Package.swift
 dependencies: [
-    .package(url: "https://github.com/zzulanas/splat-swift-sdk.git", from: "1.0.0")
+    .package(url: "https://github.com/zzulanas/splat-swift-sdk", branch: "main")
+],
+targets: [
+    .target(
+        name: "YourApp",
+        dependencies: [.product(name: "Splat3D", package: "splat-swift-sdk")]
+    )
 ]
 ```
 
-Or in Xcode: **File > Add Package Dependencies** and enter the repository URL.
+Or in Xcode: **File > Add Package Dependencies**, enter the repository URL, and pick the `main` branch.
+
+1.0.0 isn't tagged yet, so use `branch: "main"` until it is. Splat3D was named SplatKit before 1.0; [CHANGELOG.md](CHANGELOG.md) has the migration.
 
 ## Quick Start
 
 ```swift
-import SplatKit
+import Splat3D
 
 let client = SplatClient(apiKey: "s3d_your_api_key")
 
@@ -45,7 +53,7 @@ print("View your scene: \(scene.viewerURL!)")
 Use `SplatScanner` to capture video with camera poses simultaneously. ARKit poses let the pipeline skip Structure from Motion, cutting processing time significantly.
 
 ```swift
-import SplatKit
+import Splat3D
 
 let scanner = SplatScanner()
 
@@ -213,4 +221,4 @@ Get your API key from the [Splat dashboard](https://splat-3d.com/dashboard). Key
 
 ## License
 
-MIT
+[MIT](LICENSE)

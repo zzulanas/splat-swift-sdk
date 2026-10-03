@@ -1,5 +1,5 @@
 import XCTest
-@testable import SplatKit
+@testable import Splat3D
 
 // MARK: - Mock URLProtocol
 
@@ -694,7 +694,7 @@ final class SplatClientTests: XCTestCase {
 
         let captured = MockURLProtocol.capturedRequests.first
         XCTAssertEqual(captured?.value(forHTTPHeaderField: "Authorization"), "Bearer s3d_test_key_12345")
-        XCTAssertEqual(captured?.value(forHTTPHeaderField: "User-Agent"), "SplatKit/1.0")
+        XCTAssertEqual(captured?.value(forHTTPHeaderField: "User-Agent"), "Splat3D/1.0")
     }
 
     // MARK: - Date Decoding

@@ -3,26 +3,26 @@
 import PackageDescription
 
 let package = Package(
-    name: "SplatKit",
+    name: "Splat3D",
     platforms: [
         .iOS(.v16),
         .macOS(.v13),
     ],
     products: [
         .library(
-            name: "SplatKit",
-            targets: ["SplatKit"]
+            name: "Splat3D",
+            targets: ["Splat3D"]
         ),
     ],
     targets: [
         .target(
-            name: "SplatKit",
-            path: "Sources/SplatKit"
+            name: "Splat3D",
+            path: "Sources/Splat3D"
         ),
         .testTarget(
-            name: "SplatKitTests",
-            dependencies: ["SplatKit"],
-            path: "Tests/SplatKitTests",
+            name: "Splat3DTests",
+            dependencies: ["Splat3D"],
+            path: "Tests/Splat3DTests",
             resources: [.copy("Fixtures")]
         ),
     ]

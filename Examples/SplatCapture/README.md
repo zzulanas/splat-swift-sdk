@@ -1,13 +1,13 @@
 # SplatCapture Example App
 
-A minimal SwiftUI app demonstrating the [SplatKit](../../) SDK. Records video
+A minimal SwiftUI app demonstrating the [Splat3D](../../) SDK. Records video
 with ARKit LiDAR poses and uploads to the Splat API for 3D Gaussian Splat
 processing.
 
 ## Setup
 
 1. Open `SplatCapture.xcodeproj` in Xcode
-2. The project references the SplatKit SDK as a local SPM package (two
+2. The project references the Splat3D SDK as a local SPM package (two
    directories up). Xcode resolves it automatically.
 3. Give the app your API key. It is read at runtime from the `SPLAT_API_KEY`
    build setting, which comes from `Secrets.xcconfig`. Git ignores that file:
@@ -51,7 +51,7 @@ The app will show an error if you try to run on a device without LiDAR.
 
 ## How It Works
 
-This app demonstrates three key SplatKit APIs:
+This app demonstrates three key Splat3D APIs:
 
 - **`SplatScanner`** — wraps ARKit + AVAssetWriter to capture video and camera
   poses simultaneously. Exposes the `ARSession` so you can show a live camera
@@ -63,4 +63,4 @@ This app demonstrates three key SplatKit APIs:
   camera transform, 3x3 intrinsics, image dimensions, and a filename.
 
 See `ContentView.swift` for the full integration — key sections are marked with
-`// MARK: - SplatKit Integration` comments.
+`// MARK: - Splat3D Integration` comments.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import SplatKit
+@testable import Splat3D
 
 #if canImport(simd)
 import simd

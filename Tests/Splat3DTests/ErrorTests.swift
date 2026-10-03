@@ -1,5 +1,5 @@
 import XCTest
-@testable import SplatKit
+@testable import Splat3D
 
 // MARK: - Error envelope tests
 //

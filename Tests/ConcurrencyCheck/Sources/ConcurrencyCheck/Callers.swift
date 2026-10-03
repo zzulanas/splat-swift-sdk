@@ -1,5 +1,5 @@
 import Foundation
-import SplatKit
+import Splat3D
 import SwiftUI
 
 /// A main-actor view model, as a SwiftUI app would have.
