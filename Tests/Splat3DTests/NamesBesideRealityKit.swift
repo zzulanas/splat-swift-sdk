@@ -1,6 +1,6 @@
 #if canImport(RealityKit)
 import RealityKit
-import SplatKit
+import Splat3D
 
 // MARK: - Names beside RealityKit
 //
@@ -10,7 +10,7 @@ import SplatKit
 /// RealityKit's `Scene`, unqualified.
 private typealias RealityKitScene = Scene
 
-/// Every public SplatKit type, unqualified.
+/// Every public Splat3D type, unqualified.
 private typealias PublicTypes = (
     ARKitPose, CaptureResult, ModelFormat, SceneLaunch, ScenePage,
     SceneParams, ScenePreset, SceneSequence, SceneStatus, SceneUpdate,

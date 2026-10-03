@@ -1,11 +1,17 @@
 # Changelog
 
-All notable changes to SplatKit. Versions follow [Semantic Versioning](https://semver.org).
+All notable changes to Splat3D. Versions follow [Semantic Versioning](https://semver.org).
 
 ## Unreleased
 
 ### Breaking changes
 
+- The module, package and product are now `Splat3D`, formerly `SplatKit`.
+  Another SwiftPM package ships a `SplatKit` module, and an app can't import
+  two modules with one name. Type names don't change. To migrate:
+  - `.product(name: "SplatKit", package: "splat-swift-sdk")` →
+    `.product(name: "Splat3D", package: "splat-swift-sdk")`
+  - `import SplatKit` → `import Splat3D`
 - `Scene` is renamed `SplatScene`. SwiftUI and RealityKit declare `Scene`
   too, so a file that imported either beside SplatKit couldn't use the name
   unqualified: an app's `var body: some Scene` failed to compile there.

@@ -1,9 +1,9 @@
 import SwiftUI
 import ARKit
 import SceneKit
-import SplatKit
+import Splat3D
 
-// MARK: - SplatKit Integration: Configuration
+// MARK: - Splat3D Integration: Configuration
 //
 // 1. Your API key is read at runtime from the SPLAT_API_KEY build setting.
 //    Copy Secrets.example.xcconfig to Secrets.xcconfig (git ignores it) and set
@@ -355,7 +355,7 @@ final class ScanViewModel: ObservableObject {
     /// Exposed so the view can attach an ARSCNView to the session.
     var arSession: ARSession? { scanner.session }
 
-    // MARK: - SplatKit Integration: Client & Scanner Setup
+    // MARK: - Splat3D Integration: Client & Scanner Setup
     private let client = apiKey.map { SplatClient(apiKey: $0) }
     private let scanner = SplatScanner()
     private let haptics = UIImpactFeedbackGenerator(style: .medium)
@@ -393,7 +393,7 @@ final class ScanViewModel: ObservableObject {
                 }
             }
 
-            // MARK: - SplatKit Integration: Start Capture
+            // MARK: - Splat3D Integration: Start Capture
             // scanner.start() begins the ARKit session and video recording.
             // Access scanner.session to connect your own ARSCNView for preview.
             try await scanner.start()
@@ -430,7 +430,7 @@ final class ScanViewModel: ObservableObject {
         }
 
         do {
-            // MARK: - SplatKit Integration: Stop & Upload
+            // MARK: - Splat3D Integration: Stop & Upload
             // scanner.stop() finalizes the video and returns poses + video URL.
             // client.createAndProcess() handles the full flow: create scene,
             // upload video, trigger processing, and poll until complete.

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - SplatError
 
-/// Errors thrown by SplatKit API operations.
+/// Errors thrown by Splat3D API operations.
 ///
 /// A failed HTTP response is ``unauthorized(_:)``, ``notFound(_:)``,
 /// ``rateLimited(_:)`` or ``requestFailed(_:)``, each carrying an
@@ -428,7 +428,7 @@ enum HTTPHeader {
     static let splatFormat = "X-Splat-Format"
 
     static let jsonContentType = "application/json"
-    static let userAgentValue = "SplatKit/1.0"
+    static let userAgentValue = "Splat3D/1.0"
 }
 
 // MARK: - API Paths

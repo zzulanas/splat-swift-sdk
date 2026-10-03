@@ -333,7 +333,7 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
 extension CodingUserInfoKey {
 
     /// The API a response came from, so decoded URLs point back at it.
-    static let splatBaseURL = CodingUserInfoKey(rawValue: "SplatKit.baseURL")!
+    static let splatBaseURL = CodingUserInfoKey(rawValue: "Splat3D.baseURL")!
 }
 
 extension SplatScene {
