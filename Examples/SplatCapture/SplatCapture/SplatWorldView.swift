@@ -239,6 +239,11 @@ extension SplatWorldView {
             pan.isEnabled = newMode == .orbit
             pinch.isEnabled = newMode == .orbit
 
+            // Every switch starts still, and before the camera is placed, so
+            // no frame walks it off the orbit.
+            walkSpeed = 0
+            view.setWalkVelocity(forward: 0, right: 0)
+
             // Back to orbiting from wherever Look mode walked to.
             if newMode == .orbit {
                 place()

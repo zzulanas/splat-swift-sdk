@@ -120,7 +120,7 @@ struct SceneViewerScreen: View {
             }
 
             HStack(spacing: 12) {
-                Picker("Navigation", selection: $mode) {
+                Picker("Navigation", selection: modeSelection) {
                     Text("Orbit").tag(NavigationMode.orbit)
                     Text("Look").tag(NavigationMode.look)
                 }
@@ -143,6 +143,18 @@ struct SceneViewerScreen: View {
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
         .padding()
+    }
+
+    /// The mode picker's selection. A switch hides the move arrows, so one held
+    /// through it never reports its release: stop walking in the same update.
+    private var modeSelection: Binding<NavigationMode> {
+        Binding(
+            get: { mode },
+            set: { newMode in
+                walkSpeed = 0
+                mode = newMode
+            }
+        )
     }
 
     /// Walks while held: SplatKit moves the camera along where it looks.
