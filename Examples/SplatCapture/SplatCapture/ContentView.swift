@@ -10,8 +10,12 @@ import Splat3D
 //    it there. Never put a key in source: this repository is public.
 // 2. The SDK entry points used in this app:
 //    - SplatScanner  — captures video + ARKit poses (see startScan/stopAndUpload)
-//    - SplatClient   — uploads and processes via the Splat API (see stopAndUpload)
+//    - SplatClient   — uploads and processes via the Splat API (see stopAndUpload),
+//                      lists scenes (RecentScenesView.swift) and downloads their
+//                      SPZ (SceneViewer.swift)
 //    - ARKitPose     — pose format sent to the API (handled internally by SplatScanner)
+// 3. SplatKit (github.com/Xget7/splatkit-ios, MIT) draws the downloaded scene
+//    natively: see SplatWorldView.swift.
 
 /// Your Splat API key, from the `SplatAPIKey` Info.plist entry, which the build
 /// fills from `SPLAT_API_KEY` in Secrets.xcconfig. `nil` until you set it.
@@ -152,11 +156,21 @@ struct ARCameraView: UIViewRepresentable {
     }
 }
 
+// MARK: - Navigation
+
+/// Screens pushed on the main navigation stack.
+enum Route: Hashable {
+    case recentScenes
+    case viewer(sceneID: String, title: String)
+}
+
 // MARK: - ContentView
 
 struct ContentView: View {
 
     @StateObject private var viewModel = ScanViewModel()
+    // Fast by default: the quickest and cheapest preset, for trying things out.
+    @AppStorage("scenePreset") private var preset = ScenePreset.fast
 
     var body: some View {
         ZStack {
@@ -213,7 +227,7 @@ struct ContentView: View {
 
                     // Bottom: stop button
                     Button("Stop & Upload") {
-                        Task { await viewModel.stopAndUpload() }
+                        Task { await viewModel.stopAndUpload(preset: preset) }
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
@@ -231,6 +245,14 @@ struct ContentView: View {
                     }
                     .padding()
                     .navigationTitle("Splat Capture")
+                    .navigationDestination(for: Route.self) { route in
+                        switch route {
+                        case .recentScenes:
+                            RecentScenesView()
+                        case .viewer(let sceneID, let title):
+                            SceneViewerScreen(sceneID: sceneID, title: title)
+                        }
+                    }
                     .alert("Error", isPresented: $viewModel.showError) {
                         Button("OK") {}
                     } message: {
@@ -282,7 +304,7 @@ struct ContentView: View {
                 }
             }
 
-        case .complete(let viewerURL):
+        case .complete(let sceneID, let title, let viewerURL):
             VStack(spacing: 16) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 64))
@@ -292,11 +314,33 @@ struct ContentView: View {
                 Text(viewerURL.absoluteString)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                NavigationLink(value: Route.viewer(sceneID: sceneID, title: title)) {
+                    Label("View in 3D", systemImage: "cube")
+                }
+                .buttonStyle(.borderedProminent)
                 Button("Open in Safari") {
                     UIApplication.shared.open(viewerURL)
                 }
                 .buttonStyle(.bordered)
             }
+        }
+    }
+
+    // MARK: - Preset Picker
+
+    /// Processing preset for the next scan. Higher presets take longer and
+    /// cost more credits.
+    private var presetPicker: some View {
+        VStack(spacing: 6) {
+            Picker("Preset", selection: $preset) {
+                ForEach(ScenePreset.allCases, id: \.self) { preset in
+                    Text(preset.rawValue.capitalized).tag(preset)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(preset == .fast ? "Fast: the quickest and cheapest, for testing." : "Higher presets take longer and cost more credits.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -306,11 +350,18 @@ struct ContentView: View {
     private var actionButton: some View {
         switch viewModel.state {
         case .idle:
-            Button("Start Scan") {
-                Task { await viewModel.startScan() }
+            VStack(spacing: 16) {
+                presetPicker
+                Button("Start Scan") {
+                    Task { await viewModel.startScan() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                NavigationLink(value: Route.recentScenes) {
+                    Label("Recent Scenes", systemImage: "clock.arrow.circlepath")
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
 
         case .scanning:
             EmptyView()
@@ -335,7 +386,23 @@ enum ScanState {
     case scanning
     case uploading
     case processing(status: String, pct: Double?)
-    case complete(viewerURL: URL)
+    case complete(sceneID: String, title: String, viewerURL: URL)
+}
+
+extension ScenePreset {
+    /// The SDK's parameters for this preset. Ultra also builds LOD.
+    var params: SceneParams {
+        switch self {
+        case .fast:
+            return .fast
+        case .standard:
+            return .standard
+        case .quality:
+            return .quality
+        case .ultra:
+            return .ultra
+        }
+    }
 }
 
 // MARK: - ScanViewModel
@@ -417,7 +484,7 @@ final class ScanViewModel: ObservableObject {
         }
     }
 
-    func stopAndUpload() async {
+    func stopAndUpload(preset: ScenePreset) async {
         durationTimer?.invalidate()
         durationTimer = nil
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
@@ -440,7 +507,7 @@ final class ScanViewModel: ObservableObject {
             let scene = try await client.createAndProcess(
                 videoURL: result.videoURL,
                 title: "Captured Scene",
-                preset: .standard,
+                preset: preset.params,
                 arkitPoses: result.poses,
                 lidarPoints: result.lidarPoints
             ) { [weak self] status, pct in
@@ -455,9 +522,11 @@ final class ScanViewModel: ObservableObject {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
 
             if let viewerURL = scene.viewerURL {
-                state = .complete(viewerURL: viewerURL)
+                state = .complete(sceneID: scene.id, title: scene.displayTitle, viewerURL: viewerURL)
             } else {
                 state = .complete(
+                    sceneID: scene.id,
+                    title: scene.displayTitle,
                     viewerURL: URL(string: "https://splat-3d.com/tour/\(scene.id)")!
                 )
             }

@@ -4,5 +4,12 @@ xcuserdata/
 *.xcworkspace/
 DerivedData/
 
+# Except the example's resolved packages, so every checkout builds the same
+# SplatKit revision. Re-include the directories, then that one file.
+!Examples/SplatCapture/SplatCapture.xcodeproj/project.xcworkspace/
+Examples/SplatCapture/SplatCapture.xcodeproj/project.xcworkspace/**
+!Examples/SplatCapture/SplatCapture.xcodeproj/project.xcworkspace/**/
+!Examples/SplatCapture/SplatCapture.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
 # Local API keys for the example app (see Examples/SplatCapture/README.md).
 Secrets.xcconfig

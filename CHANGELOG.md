@@ -173,6 +173,9 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
 - `SplatScene` decodes `processingError`, `viewerURL`, `downloadURL` and
   `format` from the API, and unknown statuses decode instead of failing.
 - The SplatCapture example app, and macOS CI for the package and the example.
+- The example views scenes in 3D with [SplatKit](https://github.com/Xget7/splatkit-ios)
+  (MIT): a Recent Scenes list, **View in 3D** after a capture, and a preset
+  picker. It needs iOS 17, SplatKit's minimum; the SDK still supports iOS 16.
 - An MIT license, in `LICENSE`.
 
 ### Changed

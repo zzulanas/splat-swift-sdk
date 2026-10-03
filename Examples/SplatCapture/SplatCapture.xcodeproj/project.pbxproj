@@ -11,6 +11,10 @@
 		A1000003229F0001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004229F0001 /* ContentView.swift */; };
 		A1000010229F0001 /* Splat3D in Frameworks */ = {isa = PBXBuildFile; productRef = A100000F229F0001 /* Splat3D */; };
 		A1000017229F0001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000018229F0001 /* Assets.xcassets */; };
+		A100001B229F0001 /* SplatWorldView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001C229F0001 /* SplatWorldView.swift */; };
+		A100001D229F0001 /* SceneViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001E229F0001 /* SceneViewer.swift */; };
+		A100001F229F0001 /* RecentScenesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000020229F0001 /* RecentScenesView.swift */; };
+		A1000021229F0001 /* SplatKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1000023229F0001 /* SplatKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +24,9 @@
 		A1000006229F0001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1000018229F0001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A100001A229F0001 /* SplatCapture.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = SplatCapture.xcconfig; sourceTree = "<group>"; };
+		A100001C229F0001 /* SplatWorldView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplatWorldView.swift; sourceTree = "<group>"; };
+		A100001E229F0001 /* SceneViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneViewer.swift; sourceTree = "<group>"; };
+		A1000020229F0001 /* RecentScenesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentScenesView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -28,6 +35,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000010229F0001 /* Splat3D in Frameworks */,
+				A1000021229F0001 /* SplatKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -48,6 +56,9 @@
 			children = (
 				A1000002229F0001 /* SplatCaptureApp.swift */,
 				A1000004229F0001 /* ContentView.swift */,
+				A1000020229F0001 /* RecentScenesView.swift */,
+				A100001E229F0001 /* SceneViewer.swift */,
+				A100001C229F0001 /* SplatWorldView.swift */,
 				A1000018229F0001 /* Assets.xcassets */,
 				A1000006229F0001 /* Info.plist */,
 			);
@@ -80,6 +91,7 @@
 			name = SplatCapture;
 			packageProductDependencies = (
 				A100000F229F0001 /* Splat3D */,
+				A1000023229F0001 /* SplatKit */,
 			);
 			productName = SplatCapture;
 			productReference = A1000005229F0001 /* SplatCapture.app */;
@@ -106,6 +118,7 @@
 			mainGroup = A1000008229F0001;
 			packageReferences = (
 				A1000012229F0001 /* XCLocalSwiftPackageReference "../../" */,
+				A1000022229F0001 /* XCRemoteSwiftPackageReference "splatkit-ios" */,
 			);
 			productRefGroup = A100000A229F0001 /* Products */;
 			projectDirPath = "";
@@ -134,6 +147,9 @@
 			files = (
 				A1000001229F0001 /* SplatCaptureApp.swift in Sources */,
 				A1000003229F0001 /* ContentView.swift in Sources */,
+				A100001F229F0001 /* RecentScenesView.swift in Sources */,
+				A100001D229F0001 /* SceneViewer.swift in Sources */,
+				A100001B229F0001 /* SplatWorldView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -159,7 +175,7 @@
 					"DEBUG=1",
 					"$(inherited)",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
@@ -182,7 +198,7 @@
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_OPTIMIZATION_LEVEL = s;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
@@ -280,10 +296,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A1000022229F0001 /* XCRemoteSwiftPackageReference "splatkit-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Xget7/splatkit-ios";
+			requirement = {
+				kind = exactVersion;
+				version = "0.1.0-beta.1";
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A100000F229F0001 /* Splat3D */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = Splat3D;
+		};
+		A1000023229F0001 /* SplatKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000022229F0001 /* XCRemoteSwiftPackageReference "splatkit-ios" */;
+			productName = SplatKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 

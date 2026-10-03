@@ -502,4 +502,11 @@ enum Fixture {
     static let validationFailure = """
     {"success":false,"error":{"issues":[{"code":"too_small","minimum":1,"type":"number","inclusive":true,"exact":false,"message":"Number must be greater than or equal to 1","path":["limit"]}],"name":"ZodError"}}
     """
+
+    /// 400 from downloadScene for `format=spz`, from an API whose route
+    /// accepts only sog and ply (the pinned spec). The same validation
+    /// failure as above, generated with zod 3.25.76 against downloadQuerySchema.
+    static let unknownFormat = """
+    {"success":false,"error":{"issues":[{"received":"spz","code":"invalid_enum_value","options":["sog","ply"],"path":["format"],"message":"Invalid enum value. Expected 'sog' | 'ply', received 'spz'"}],"name":"ZodError"}}
+    """
 }

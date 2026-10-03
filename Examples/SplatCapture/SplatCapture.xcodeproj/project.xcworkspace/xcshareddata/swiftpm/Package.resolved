@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "splatkit-ios",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Xget7/splatkit-ios",
+      "state" : {
+        "revision" : "6337a3e64f67c7c0b34c7f1d7fcbe98a00d7d79e",
+        "version" : "0.1.0-beta.1"
+      }
+    }
+  ],
+  "version" : 3
+}

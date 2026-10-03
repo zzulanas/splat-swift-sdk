@@ -397,4 +397,39 @@ extension SplatClientTests {
 
         XCTAssertEqual(file.pathExtension, "spz")
     }
+
+    func testDownloadSendsAFormatThisSDKDoesntName() async throws {
+        // A format the SDK doesn't name yet goes out as written, so an app
+        // can ask for one as soon as the API serves it.
+        MockURLProtocol.stub("\(Fixture.scenePath)/download", MockURLProtocol.Stub(
+            statusCode: 200,
+            body: Data("spz".utf8),
+            headers: ["Content-Type": "application/octet-stream", "X-Splat-Format": "spz"]
+        ))
+
+        let file = try await makeClient().downloadScene(id: Fixture.sceneID, format: ModelFormat(rawValue: "spz"))
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        XCTAssertEqual(file.pathExtension, "spz")
+        let request = MockURLProtocol.requests(to: "\(Fixture.scenePath)/download").first
+        XCTAssertEqual(request?.url?.query, "format=spz")
+    }
+
+    func testDownloadOfAFormatTheAPIDoesntAcceptIsAValidationFailure() async throws {
+        // An API that predates a format rejects it in route validation: a
+        // 400 with no error code, its message naming the field.
+        MockURLProtocol.stub("\(Fixture.scenePath)/download", .json(400, Fixture.unknownFormat))
+
+        let error = await expectSplatError {
+            try await self.makeClient().downloadScene(id: Fixture.sceneID, format: ModelFormat(rawValue: "spz"))
+        }
+
+        guard case .requestFailed(let apiError) = error else {
+            return XCTFail("Expected .requestFailed, got \(String(describing: error))")
+        }
+        XCTAssertEqual(apiError.statusCode, 400)
+        XCTAssertNil(apiError.code)
+        XCTAssertEqual(apiError.message, "format: Invalid enum value. Expected 'sog' | 'ply', received 'spz'")
+        XCTAssertEqual(MockURLProtocol.requests(to: "\(Fixture.scenePath)/download").count, 1)
+    }
 }

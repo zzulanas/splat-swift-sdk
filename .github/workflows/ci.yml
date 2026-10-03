@@ -32,10 +32,20 @@ jobs:
 
       # Unsigned simulator build: proves the example compiles against this
       # revision of the package without any signing identity.
-      - name: Example app
+      - name: Example app (Simulator)
         run: >
           xcodebuild build
           -project Examples/SplatCapture/SplatCapture.xcodeproj
           -scheme SplatCapture
           -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO
+
+      # The same, for devices: links SplatKit's iphoneos binaries, which the
+      # simulator build never touches.
+      - name: Example app (device)
+        run: >
+          xcodebuild build
+          -project Examples/SplatCapture/SplatCapture.xcodeproj
+          -scheme SplatCapture
+          -destination 'generic/platform=iOS'
           CODE_SIGNING_ALLOWED=NO
