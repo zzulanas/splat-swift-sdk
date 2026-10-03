@@ -12,6 +12,8 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
   - `.product(name: "SplatKit", package: "splat-swift-sdk")` →
     `.product(name: "Splat3D", package: "splat-swift-sdk")`
   - `import SplatKit` → `import Splat3D`
+  - In an Xcode project, replace the linked SplatKit product with Splat3D
+    under the target's Frameworks, Libraries, and Embedded Content.
 - `Scene` is renamed `SplatScene`. SwiftUI and RealityKit declare `Scene`
   too, so a file that imported either beside SplatKit couldn't use the name
   unqualified: an app's `var body: some Scene` failed to compile there.
@@ -54,7 +56,7 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
     analytics keys or saved state built that way **still compile but change**.
   - `allCases` has 15 members in pipeline order instead of 10, and grows when
     a stage is named, so don't index into it.
-- SplatKit needs Swift 5.10 (Xcode 15.3): `SplatScanner` uses
+- Splat3D needs Swift 5.10 (Xcode 15.3): `SplatScanner` uses
   `nonisolated(unsafe)`. The manifest's tools version says so.
 - Once `createAndProcess` has created the scene, a failure that leaves the
   outcome open (network errors, a timeout, cancellation, a launch refused for
