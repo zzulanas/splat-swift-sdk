@@ -11,10 +11,6 @@ import SplatKit
 // Both modules import side by side: Splat3D was named SplatKit before 1.0 and
 // was renamed so it wouldn't clash with this renderer.
 
-/// SPZ, the compressed format SplatKit reads. Built from its raw value: the
-/// SDK names a format once the API documents it, and today's API doesn't yet.
-let spzFormat = ModelFormat(rawValue: "spz")
-
 /// Downloads a scene's SPZ and shows it with SplatKit.
 struct SceneViewerScreen: View {
 
@@ -251,7 +247,7 @@ final class SceneViewerModel: ObservableObject {
         defer { progress.cancel() }
 
         do {
-            let downloaded = try await client.downloadScene(id: sceneID, format: spzFormat)
+            let downloaded = try await client.downloadScene(id: sceneID, format: .spz)
 
             // A retry outlives its screen: once it closed, or a newer load
             // began, nothing will show this file.
@@ -261,7 +257,7 @@ final class SceneViewerModel: ObservableObject {
             }
 
             // The extension is the format the server actually sent.
-            guard downloaded.pathExtension == spzFormat.rawValue else {
+            guard downloaded.pathExtension == ModelFormat.spz.rawValue else {
                 try? FileManager.default.removeItem(at: downloaded)
                 phase = .failed(.otherFormat(downloaded.pathExtension))
                 return

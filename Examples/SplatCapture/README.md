@@ -92,15 +92,16 @@ What can go wrong, and what the app says:
 
 SplatKit has no orientation setting: it reads every SPZ as World Labs files
 are laid out, +Y down, and turns it half a turn about X. Splat3D's pipeline
-turns scenes made from a video or photos without ARKit poses so +Y is up, the
-convention of PlayCanvas, three.js and SuperSplat, and writes the SPZ with
-those coordinates as they are. Those would come out upside down, so the viewer
-starts with **Flip** on, which rotates the picture half a turn on screen.
-Touches turn with it, so dragging still follows the picture. Turn **Flip** off
-to see SplatKit's own orientation.
+turns scenes so +Y is up, the convention of PlayCanvas, three.js and
+SuperSplat, and writes the SPZ with those coordinates as they are. Those would
+come out upside down, so the viewer starts with **Flip** on, which rotates the
+picture half a turn on screen. Touches turn with it, so dragging still follows
+the picture. Turn **Flip** off to see SplatKit's own orientation.
 
-Scenes captured with ARKit poses, as this app's are, can come out about 90°
-off, which **Flip** can't correct. Why is under investigation.
+The pipeline doesn't get every scene upright yet. ARKit scenes processed before
+it took up from ARKit's gravity direction can be about 90° off, which **Flip**
+can't correct. At least one video uploaded without ARKit poses still shows
+upside down with **Flip** on.
 
 ## How It Works
 
@@ -115,9 +116,9 @@ This app demonstrates these Splat3D APIs:
 - **`ARKitPose`** — the pose format sent to the API. Each pose includes the 4x4
   camera transform, 3x3 intrinsics, image dimensions, and a filename.
 - **`SplatClient.listScenePage()`** — the Recent Scenes list.
-- **`SplatClient.downloadScene(id:format:)`** — fetches the SPZ. The SDK
-  doesn't name SPZ yet, so the app passes `ModelFormat(rawValue: "spz")`. It
-  gives the client a `URLSession` whose delegate watches the download's bytes.
+- **`SplatClient.downloadScene(id:format:)`** — fetches the SPZ with
+  `format: .spz`. It gives the client a `URLSession` whose delegate watches
+  the download's bytes.
 
 See `ContentView.swift` for the full integration — key sections are marked with
 `// MARK: - Splat3D Integration` comments. The viewer is in `SceneViewer.swift`

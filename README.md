@@ -79,6 +79,28 @@ let scene = try await client.createAndProcess(
 )
 ```
 
+## View scenes in 3D
+
+Pass `.spz` to `downloadScene` to get Niantic's compressed splat format, which native renderers such as SplatKit load:
+
+```swift
+let file = try await client.downloadScene(id: scene.id, format: .spz)
+```
+
+Older scenes, and scenes whose SPZ conversion failed, have no SPZ, so the call throws `SplatError.notFound` for them. The API never sends another format in its place.
+
+The [SplatCapture](Examples/SplatCapture) example app draws the file with [SplatKit](https://github.com/Xget7/splatkit-ios), an MIT-licensed Metal renderer for iOS by [Xget7](https://github.com/Xget7). The Splat3D package doesn't depend on SplatKit. Only the example app does, pinned to version 0.1.0-beta.1. This SDK was named SplatKit before 1.0. It is unrelated to Xget7's renderer, and was renamed to Splat3D because an app can't import two modules with one name.
+
+To draw a scene in your own app, hand the downloaded file to SplatKit's `SplatMetalView`, as [SceneViewer.swift](Examples/SplatCapture/SplatCapture/SceneViewer.swift) and [SplatWorldView.swift](Examples/SplatCapture/SplatCapture/SplatWorldView.swift) do.
+
+SplatKit's limits as of 0.1.0-beta.1:
+
+- It needs iOS 17 and a physical device with an A14, M1 or newer GPU. `SplatMetalView.isAvailable` is false when Metal can't start, as in the Simulator. Splat3D itself still supports iOS 16.
+- It doesn't read SOG yet, so ask for `.spz` instead of the default `.sog`.
+- It refuses SPZ version 4 files, the version Splat3D writes, above about 3.41 million splats at degree 3 spherical harmonics, the preset default. The error is "SPZ payload exceeds the decoded size ceiling". `SplatScene.numGaussians` gives a scene's splat count.
+
+SplatKit assumes the World Labs layout, +Y down, and rotates every SPZ 180 degrees about the X axis. The Splat3D pipeline makes scenes +Y up, so they show upside down. The example turns the picture back with its Flip switch, which starts on and rotates the view 180 degrees on screen, and an app of your own needs the same half turn. The pipeline doesn't get every scene upright yet. Older ARKit scenes can be turned about 90 degrees, and Flip can't correct that. At least one video uploaded without ARKit poses still shows upside down with Flip on.
+
 ## API Reference
 
 ### SplatClient
@@ -97,7 +119,7 @@ let scene = try await client.createAndProcess(
 | `updateScene(id:_:)` | Change title, address, description, or visibility |
 | `retrainScene(id:preset:)` | Process the source again at another preset, as a new scene |
 | `cancelScene(id:)` | Cancel an uploading or processing scene |
-| `downloadScene(id:format:)` | Download the 3D model (SOG or PLY) to a temporary file |
+| `downloadScene(id:format:)` | Download the 3D model (SOG, PLY or SPZ) to a temporary file |
 | `getSceneThumbnail(id:)` | Thumbnail image data |
 | `getUsage()` | Usage this billing period and plan limits |
 | `deleteScene(id:)` | Delete a scene and all files |

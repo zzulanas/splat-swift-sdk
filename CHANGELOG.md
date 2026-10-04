@@ -162,6 +162,10 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
 - `ModelFormat`, an open set like `SceneStatus`, for downloads and
   `SplatScene.format`. A format the API adds later keeps its name, and a
   download of it gets that file extension.
+- `ModelFormat.spz`, so `downloadScene(id:format:)` can ask for SPZ, the
+  compressed format that native renderers load. Older scenes, and scenes whose
+  SPZ conversion failed, have none, and the call throws `.notFound` for them.
+  The API never sends another format in its place.
 - Public initializers on `ScenePage`, `Usage` and `Usage.Limits` for test
   doubles.
 - `SplatError.apiError` reads the failed response behind any HTTP error.
@@ -176,6 +180,9 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
 - The example views scenes in 3D with [SplatKit](https://github.com/Xget7/splatkit-ios)
   (MIT): a Recent Scenes list, **View in 3D** after a capture, and a preset
   picker. It needs iOS 17, SplatKit's minimum; the SDK still supports iOS 16.
+- A "View scenes in 3D" section in the README. It covers downloading SPZ and
+  drawing it with SplatKit, including SplatKit's iOS 17 and A14 requirement,
+  its orientation, and its SPZ size limit. Splat3D doesn't depend on SplatKit.
 - An MIT license, in `LICENSE`.
 
 ### Changed

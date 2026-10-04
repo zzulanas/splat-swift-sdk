@@ -23,8 +23,13 @@ public struct ModelFormat: RawRepresentable, Hashable, Codable, Sendable, CaseIt
     /// Uncompressed PLY.
     public static let ply = ModelFormat(rawValue: "ply")
 
+    /// SPZ, Niantic's compressed format, for renderers that load `.spz` files.
+    /// A scene without one answers 404, and the API never sends another format
+    /// in its place.
+    public static let spz = ModelFormat(rawValue: "spz")
+
     /// Every format this SDK names.
-    public static let allCases: [ModelFormat] = [.sog, .ply]
+    public static let allCases: [ModelFormat] = [.sog, .ply, .spz]
 
     public var description: String {
         rawValue
