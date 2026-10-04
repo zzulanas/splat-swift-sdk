@@ -4,7 +4,7 @@ import XCTest
 // MARK: - Contract tests
 //
 // Pins the API contract the SDK was written against. Fixtures/openapi.json is
-// https://api.splat-3d.com/openapi.json as fetched on 2026-09-28; refresh it
+// https://api.splat-3d.com/openapi.json as fetched on 2026-10-04; refresh it
 // when the API changes and these tests point at what the SDK must follow.
 //
 //   openapi.json ──> every operationId ──> covered by a SplatClient method
@@ -89,7 +89,12 @@ final class ContractTests: XCTestCase {
         // listScenes never selects ssim, which the spec's Scene requires.
         FixtureCase("scenePageOne", Fixture.scenePageOne, "listScenes", 200, deviations: ["missing data[].ssim"]),
         FixtureCase("scenePageTwo", Fixture.scenePageTwo, "listScenes", 200, deviations: ["missing data[].ssim"]),
-        FixtureCase("updatedScene", Fixture.updatedScene, "updateScene", 200),
+        // updateScene answers in getScene's shape, so it differs the same way.
+        FixtureCase("updatedScene", Fixture.updatedScene, "updateScene", 200, deviations: [
+            "missing data.training_model",
+            "undeclared data.psnr_holdout",
+            "undeclared data.ssim_holdout",
+        ]),
         FixtureCase("processAccepted", Fixture.processAccepted, "processScene", 200),
         FixtureCase("retrainAccepted", Fixture.retrainAccepted, "retrainScene", 200),
         FixtureCase("cancelAccepted", Fixture.cancelAccepted, "cancelScene", 200),
@@ -112,6 +117,7 @@ final class ContractTests: XCTestCase {
         FixtureCase("retrainConflict", Fixture.retrainConflict, "retrainScene", 409),
         FixtureCase("cancelConflict", Fixture.cancelConflict, "cancelScene", 409),
         FixtureCase("noModel", Fixture.noModel, "downloadScene", 404),
+        FixtureCase("noSPZ", Fixture.noSPZ, "downloadScene", 404),
         FixtureCase("noThumbnail", Fixture.noThumbnail, "getSceneThumbnail", 404),
         FixtureCase("internalError", Fixture.internalError, "getScene", 500),
         FixtureCase("tierViolation", Fixture.tierViolation, "createScene", 422),
@@ -145,10 +151,8 @@ final class ContractTests: XCTestCase {
     static let undocumentedStatuses: Set<String> = [
         "deleteScene 403",   // another user's scene (deleteScene in api/src/lib/scenes.ts)
         "processScene 402",  // insufficient credits (processScene)
-        "processScene 503",  // launch not confirmed; "Retry the same request" (processScene)
         "processScene 429",  // monthly processing quota used up (processScene)
         "processScene 502",  // a launch the API failed and refunded (failLaunch)
-        "processScene 400",  // source not in storage, or duplicate pose paths (processScene)
         "getScene 500",      // any unhandled error (errorHandler)
         "listScenes 400",    // `limit` outside 1–100 (route validation)
         "downloadScene 400", // a `format` the route doesn't accept (route validation)

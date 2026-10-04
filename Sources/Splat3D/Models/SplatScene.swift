@@ -165,7 +165,8 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
 
     /// API URL for the scene's 3D model, once processing is complete.
     ///
-    /// It serves SOG by default and PLY with `?format=ply`. It requires your
+    /// It serves SOG by default, PLY with `?format=ply` and SPZ with
+    /// `?format=spz`. It requires your
     /// API key as a Bearer token, so a browser, web view or `URLSession.shared`
     /// gets a 401 from it: fetch the model with
     /// ``SplatClient/downloadScene(id:format:)``.

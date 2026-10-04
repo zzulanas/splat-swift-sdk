@@ -520,8 +520,10 @@ public final class SplatClient: Sendable {
 
     /// Download a completed scene's 3D model to a temporary file.
     ///
-    /// When the requested format isn't stored, the API serves the other one.
+    /// When the requested SOG or PLY isn't stored, the API serves the other one.
     /// The file's extension, `sog` or `ply`, is the format actually served.
+    /// SPZ is never swapped for another format. Older scenes, and scenes whose
+    /// SPZ conversion failed, have none, so asking for one throws.
     ///
     /// ```swift
     /// let file = try await client.downloadScene(id: sceneId, format: .ply)
@@ -533,7 +535,8 @@ public final class SplatClient: Sendable {
     ///   - format: Preferred format. Defaults to `.sog`.
     /// - Returns: A file in the temporary directory. Move it somewhere
     ///   permanent: the system may delete temporary files.
-    /// - Throws: ``SplatError/notFound(_:)`` if the scene has no model yet.
+    /// - Throws: ``SplatError/notFound(_:)`` if the scene has no model yet, or
+    ///   no SPZ when you ask for ``ModelFormat/spz``.
     public func downloadScene(id: String, format: ModelFormat = .sog) async throws -> URL {
         let query = [URLQueryItem(name: "format", value: format.rawValue)]
         let (file, response) = try await api.download(path: APIPath.scene(id, .download), query: query)

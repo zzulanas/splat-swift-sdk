@@ -259,7 +259,7 @@ enum Fixture {
     /// PATCH /v1/scenes/{id} → 200. updateScene answers with toPublicScene,
     /// the public shape GET serves, every key present (api/src/lib/scenes.ts,
     /// since gaussian-splatting #320). A complete scene with a SOG model gets
-    /// its viewer and download URLs. Spec: UpdateSceneResponse (an untyped record).
+    /// its viewer and download URLs. Spec: SceneDetailResponse.
     static let updatedScene = """
     {
         "data": {
@@ -311,10 +311,11 @@ enum Fixture {
     """
 
     /// POST /v1/scenes/{id}/cancel → 200 (cancel route in
-    /// api/src/routes/scenes.ts). Spec: CancelSceneResponse.
+    /// api/src/routes/scenes.ts, which adds cancelScene's refund). Spec:
+    /// CancelSceneResponse, with its refunded_credits example.
     static let cancelAccepted = """
     {
-        "data": { "id": "a1b2c3d4e5f6", "cancelled": true },
+        "data": { "id": "a1b2c3d4e5f6", "cancelled": true, "refunded": true, "refunded_credits": 20 },
         "meta": { "request_id": "550e8400-e29b-41d4-a716-446655440000" }
     }
     """
@@ -450,6 +451,11 @@ enum Fixture {
     /// 404 from downloadScene (api/src/lib/scenes.ts).
     static let noModel = error("not_found", "No model file available for this scene.")
 
+    /// 404 from downloadScene for `format=spz` when the scene has no SPZ, or
+    /// R2 lacks the file (api/src/lib/scenes.ts). It never falls back to SOG
+    /// or PLY.
+    static let noSPZ = error("not_found", "No SPZ file available for this scene.")
+
     /// 404 from getSceneThumbnail (api/src/lib/scenes.ts); matches a live
     /// response from api.splat-3d.com on 2026-09-28.
     static let noThumbnail = error("not_found", "Thumbnail not found.")
@@ -503,10 +509,10 @@ enum Fixture {
     {"success":false,"error":{"issues":[{"code":"too_small","minimum":1,"type":"number","inclusive":true,"exact":false,"message":"Number must be greater than or equal to 1","path":["limit"]}],"name":"ZodError"}}
     """
 
-    /// 400 from downloadScene for `format=spz`, from an API whose route
-    /// accepts only sog and ply (the pinned spec). The same validation
+    /// 400 from downloadScene for `format=glb`, a format the route doesn't
+    /// accept (the pinned spec lists sog, ply and spz). The same validation
     /// failure as above, generated with zod 3.25.76 against downloadQuerySchema.
     static let unknownFormat = """
-    {"success":false,"error":{"issues":[{"received":"spz","code":"invalid_enum_value","options":["sog","ply"],"path":["format"],"message":"Invalid enum value. Expected 'sog' | 'ply', received 'spz'"}],"name":"ZodError"}}
+    {"success":false,"error":{"issues":[{"received":"glb","code":"invalid_enum_value","options":["sog","ply","spz"],"path":["format"],"message":"Invalid enum value. Expected 'sog' | 'ply' | 'spz', received 'glb'"}],"name":"ZodError"}}
     """
 }
