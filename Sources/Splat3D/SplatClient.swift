@@ -563,6 +563,8 @@ public final class SplatClient: Sendable {
 
     /// Fetch a scene's thumbnail image.
     ///
+    /// The request carries your API key, which a private scene's thumbnail needs.
+    ///
     /// - Parameter id: The scene ID.
     /// - Returns: PNG or JPEG image data, e.g. for `UIImage(data:)`.
     /// - Throws: ``SplatError/notFound(_:)`` if the scene has no thumbnail yet.

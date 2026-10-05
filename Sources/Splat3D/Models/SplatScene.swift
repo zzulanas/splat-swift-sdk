@@ -152,6 +152,10 @@ public struct SplatScene: Codable, Identifiable, Sendable, Equatable {
     public let numGaussians: Int?
 
     /// URL of the scene thumbnail image, or `nil` if not yet generated.
+    ///
+    /// A private scene's thumbnail needs your API key as a Bearer token, so
+    /// `AsyncImage`, a web view or `URLSession.shared` can't load it: fetch
+    /// the image with ``SplatClient/getSceneThumbnail(id:)``.
     public let thumbnailURL: URL?
 
     /// Error message when processing failed, or `nil` if no error.

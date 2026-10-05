@@ -116,6 +116,9 @@ This app demonstrates these Splat3D APIs:
 - **`ARKitPose`** — the pose format sent to the API. Each pose includes the 4x4
   camera transform, 3x3 intrinsics, image dimensions, and a filename.
 - **`SplatClient.listScenePage()`** — the Recent Scenes list.
+- **`SplatClient.getSceneThumbnail(id:)`** — the list's thumbnails. It sends
+  the API key, which a private scene's thumbnail needs, so `AsyncImage` can't
+  load them. The app keeps the decoded images in memory while the list is open.
 - **`SplatClient.downloadScene(id:format:)`** — fetches the SPZ with
   `format: .spz`. It gives the client a `URLSession` whose delegate watches
   the download's bytes.
