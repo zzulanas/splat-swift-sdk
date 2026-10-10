@@ -215,6 +215,9 @@ All notable changes to Splat3D. Versions follow [Semantic Versioning](https://se
 - Interpolating a `SplatError.APIError` prints its message, as 0.1.0's
   `String` payload did; `debugDescription` has every field.
 - Thumbnails link to the API the client talks to, not always production.
+- `SplatScene.thumbnailURL` is documented as needing your API key for a
+  private scene, so load a thumbnail with `getSceneThumbnail(id:)` rather than
+  from the URL. The example's Recent Scenes list does, in place of `AsyncImage`.
 - An error response that isn't from the API (an edge proxy's HTML page, or an
   empty or very long body) reads as its HTTP reason phrase, such as
   "Bad Gateway", instead of the raw page.

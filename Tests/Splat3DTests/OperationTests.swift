@@ -273,6 +273,22 @@ extension SplatClientTests {
         XCTAssertEqual(data, png)
     }
 
+    /// SplatCapture loads its thumbnails through this call because the API
+    /// wants the key for a private scene's thumbnail, so the call must send it.
+    func testGetSceneThumbnailSendsTheAPIKey() async throws {
+        let thumbnailPath = "\(Fixture.scenePath)/thumbnail"
+        MockURLProtocol.stub(thumbnailPath, MockURLProtocol.Stub(
+            statusCode: 200,
+            body: Data([0xFF, 0xD8, 0xFF]),
+            headers: ["Content-Type": "image/jpeg"]
+        ))
+
+        _ = try await makeClient().getSceneThumbnail(id: Fixture.sceneID)
+
+        let request = MockURLProtocol.requests(to: thumbnailPath).first
+        XCTAssertEqual(request?.value(forHTTPHeaderField: "Authorization"), "Bearer s3d_test_key_12345")
+    }
+
     func testGetSceneThumbnailMissingIsNotFound() async throws {
         MockURLProtocol.stub("\(Fixture.scenePath)/thumbnail", .json(404, Fixture.noThumbnail))
 
